@@ -1,5 +1,4 @@
 export default async function handler(req, res) {
-  // CORS headers
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
@@ -14,45 +13,47 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "Missing imageBase64" });
     }
 
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
+    const apiKey = process.env.GEMINI_API_KEY;
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
+
+    const response = await fetch(url, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": process.env.ANTHROPIC_API_KEY,
-        "anthropic-version": "2023-06-01",
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 1000,
-        system: `你是名片資料擷取助理。僅回傳 JSON，無其他文字或 markdown。
-格式：{"nameZh":"","nameEn":"","title":"","company":"","email":"","phone":"","address":"","website":""}
-如果某欄位找不到，回傳空字串。`,
-        messages: [
+        contents: [
           {
-            role: "user",
-            content: [
+            parts: [
               {
-                type: "image",
-                source: {
-                  type: "base64",
-                  media_type: mediaType || "image/jpeg",
+                inlineData: {
+                  mimeType: mediaType || "image/jpeg",
                   data: imageBase64,
                 },
               },
-              { type: "text", text: "請擷取這張名片的所有資訊" },
+              {
+                text: `你是名片資料擷取助理。請從這張名片圖片中擷取所有資訊。
+僅回傳 JSON，不要有任何說明文字或 markdown 格式。
+格式如下：
+{"nameZh":"","nameEn":"","title":"","company":"","email":"","phone":"","address":"","website":""}
+如果某欄位找不到，回傳空字串。`,
+              },
             ],
           },
         ],
+        generationConfig: {
+          temperature: 0.1,
+          maxOutputTokens: 1000,
+        },
       }),
     });
 
     const data = await response.json();
 
     if (data.error) {
-      return res.status(500).json({ error: data.error.message });
+      console.error("Gemini error:", data.error);
+      return res.status(500).json({ error: data.error.message || "Gemini API 錯誤" });
     }
 
-    const text = data.content?.find((b) => b.type === "text")?.text || "{}";
+    const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
     const clean = text.replace(/```json|```/g, "").trim();
     const parsed = JSON.parse(clean);
 
