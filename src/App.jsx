@@ -250,11 +250,32 @@ function ScanModal({ onClose, onSave }) {
     reader.readAsDataURL(f);
   };
 
+  // 壓縮圖片到 1200px 以內，JPEG 品質 0.8，確保不超過 Vercel 4.5MB 限制
+  const compressImage = (dataUrl) =>
+    new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        const MAX = 1200;
+        let { width, height } = img;
+        if (width > MAX || height > MAX) {
+          if (width > height) { height = Math.round((height * MAX) / width); width = MAX; }
+          else { width = Math.round((width * MAX) / height); height = MAX; }
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = width; canvas.height = height;
+        canvas.getContext("2d").drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL("image/jpeg", 0.82));
+      };
+      img.src = dataUrl;
+    });
+
   const extractData = async () => {
     setLoading(true);
     setError(null);
     try {
-      const base64 = preview.split(",")[1];
+      // 先壓縮，再取 base64
+      const compressed = await compressImage(preview);
+      const base64 = compressed.split(",")[1];
 
       // ── 呼叫 Vercel API Route（背後是 Gemini）────────────────────────────
       const r = await fetch("/api/scan", {
@@ -262,7 +283,7 @@ function ScanModal({ onClose, onSave }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           imageBase64: base64,
-          mediaType: file.type || "image/jpeg",
+          mediaType: "image/jpeg",
         }),
       });
 
