@@ -1,42 +1,43 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect } from "react";
 import {
-  collection, doc, setDoc, deleteDoc, onSnapshot, query, orderBy
+  collection, doc, setDoc, deleteDoc, onSnapshot, query, orderBy,
 } from "firebase/firestore";
 import {
   createUserWithEmailAndPassword, signInWithEmailAndPassword,
-  signInWithPopup, signOut, onAuthStateChanged
+  signInWithPopup, signOut, onAuthStateChanged,
 } from "firebase/auth";
 import { auth, db, googleProvider } from "./firebase.js";
 import {
   Search, Camera, User, Building2, Phone, Mail, Globe, MapPin,
   X, Plus, Check, Edit3, Download, Trash2, ChevronDown, Loader2,
-  FileText, ScanLine, Grid3x3, List, Filter, LogOut, Cloud, CloudOff, RefreshCw
+  FileText, ScanLine, Grid3x3, List, Filter, LogOut, Cloud, CloudOff, RefreshCw,
 } from "lucide-react";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const TAG_COLORS = [
-  "bg-blue-100 text-blue-700","bg-emerald-100 text-emerald-700","bg-violet-100 text-violet-700",
-  "bg-amber-100 text-amber-700","bg-rose-100 text-rose-700","bg-cyan-100 text-cyan-700",
-  "bg-orange-100 text-orange-700","bg-pink-100 text-pink-800",
+  "bg-blue-100 text-blue-700", "bg-emerald-100 text-emerald-700",
+  "bg-violet-100 text-violet-700", "bg-amber-100 text-amber-700",
+  "bg-rose-100 text-rose-700", "bg-cyan-100 text-cyan-700",
+  "bg-orange-100 text-orange-700", "bg-pink-100 text-pink-800",
 ];
 const getTagColor = (tag) => TAG_COLORS[tag.charCodeAt(0) % TAG_COLORS.length];
 
 const SOURCE_BADGE = {
-  scan:   { label:"掃描", color:"bg-blue-50 text-blue-600" },
-  csv:    { label:"CSV",  color:"bg-amber-50 text-amber-600" },
-  manual: { label:"手動", color:"bg-gray-100 text-gray-500" },
+  scan:   { label: "掃描", color: "bg-blue-50 text-blue-600" },
+  csv:    { label: "CSV",  color: "bg-amber-50 text-amber-600" },
+  manual: { label: "手動", color: "bg-gray-100 text-gray-500" },
 };
 
 const AUTH_ERRORS = {
-  "auth/email-already-in-use":    "此 Email 已被註冊",
-  "auth/invalid-email":           "Email 格式不正確",
-  "auth/weak-password":           "密碼至少需要 6 個字元",
-  "auth/user-not-found":          "找不到此帳號",
-  "auth/wrong-password":          "密碼錯誤",
-  "auth/invalid-credential":      "帳號或密碼錯誤",
-  "auth/too-many-requests":       "嘗試次數過多，請稍後再試",
-  "auth/popup-closed-by-user":    "視窗已關閉，請重試",
-  "auth/popup-blocked":           "彈出視窗被封鎖，請允許後重試",
+  "auth/email-already-in-use":  "此 Email 已被註冊",
+  "auth/invalid-email":         "Email 格式不正確",
+  "auth/weak-password":         "密碼至少需要 6 個字元",
+  "auth/user-not-found":        "找不到此帳號",
+  "auth/wrong-password":        "密碼錯誤",
+  "auth/invalid-credential":    "帳號或密碼錯誤",
+  "auth/too-many-requests":     "嘗試次數過多，請稍後再試",
+  "auth/popup-closed-by-user":  "視窗已關閉，請重試",
+  "auth/popup-blocked":         "彈出視窗被封鎖，請允許後重試",
 };
 
 // ─── Firestore helpers ────────────────────────────────────────────────────────
@@ -203,7 +204,6 @@ function LoginScreen({ onEmailLogin, onGoogleLogin, loading, googleLoading }) {
           <div className="flex-1 h-px bg-gray-100" />
         </div>
 
-        {/* Tab */}
         <div className="flex bg-gray-100 rounded-xl p-1 mb-4">
           <button onClick={() => setMode("login")} className={`flex-1 py-2 rounded-lg text-sm font-medium transition-colors ${mode === "login" ? "bg-white text-gray-900 shadow-sm" : "text-gray-500"}`}>登入</button>
           <button onClick={() => setMode("register")} className={`flex-1 py-2 rounded-lg text-sm font-medium transition-colors ${mode === "register" ? "bg-white text-gray-900 shadow-sm" : "text-gray-500"}`}>註冊</button>
@@ -251,40 +251,58 @@ function ScanModal({ onClose, onSave }) {
   };
 
   const extractData = async () => {
-    setLoading(true); setError(null);
+    setLoading(true);
+    setError(null);
     try {
       const base64 = preview.split(",")[1];
-      const r = await fetch("https://api.anthropic.com/v1/messages", {
+
+      // ── 呼叫 Vercel API Route（背後是 Gemini）────────────────────────────
+      const r = await fetch("/api/scan", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 1000,
-          system: `你是名片資料擷取助理。僅回傳 JSON，無其他文字。格式：{"nameZh":"","nameEn":"","title":"","company":"","email":"","phone":"","address":"","website":""}`,
-          messages: [{ role: "user", content: [
-            { type: "image", source: { type: "base64", media_type: file.type || "image/jpeg", data: base64 } },
-            { type: "text", text: "擷取名片資訊" }
-          ]}]
-        })
+          imageBase64: base64,
+          mediaType: file.type || "image/jpeg",
+        }),
       });
-      const data = await r.json();
-      const text = data.content?.find(b => b.type === "text")?.text || "{}";
-      const parsed = JSON.parse(text.replace(/```json|```/g, "").trim());
-      setExtracted({ ...parsed, tags: [], note: "" });
+
+      const result = await r.json();
+
+      if (!result.success) {
+        throw new Error(result.error || "辨識失敗");
+      }
+
+      setExtracted({ ...result.data, tags: [], note: "" });
     } catch (e) {
-      setError("辨識失敗，請手動填寫");
+      console.error(e);
+      setError("辨識失敗，請重試或手動填寫");
       setExtracted({ nameZh: "", nameEn: "", title: "", company: "", email: "", phone: "", address: "", website: "", tags: [], note: "" });
     }
     setLoading(false);
+  };
+
+  const handleSave = () => {
+    onSave({
+      ...extracted,
+      id: Date.now().toString(),
+      createdAt: new Date().toISOString(),
+      source: "scan",
+      synced: { notion: false, phoneContacts: false },
+    });
+    onClose();
   };
 
   return (
     <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-end md:items-center justify-center p-0 md:p-4">
       <div className="bg-white w-full md:max-w-2xl md:rounded-2xl rounded-t-3xl max-h-[95vh] flex flex-col overflow-hidden shadow-2xl">
         <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
-          <div className="flex items-center gap-2"><ScanLine className="text-blue-500" size={20} /><span className="font-bold text-gray-900">掃描名片</span></div>
+          <div className="flex items-center gap-2">
+            <ScanLine className="text-blue-500" size={20} />
+            <span className="font-bold text-gray-900">掃描名片</span>
+          </div>
           <button onClick={onClose} className="p-2 rounded-xl hover:bg-gray-100"><X size={18} /></button>
         </div>
+
         <div className="flex-1 overflow-y-auto p-5 space-y-4">
           {!preview ? (
             <div
@@ -301,23 +319,51 @@ function ScanModal({ onClose, onSave }) {
           ) : (
             <div className="space-y-4">
               <div className="relative">
-                <img src={preview} alt="" className="w-full rounded-xl object-contain max-h-52 bg-gray-50" />
-                <button onClick={() => { setPreview(null); setFile(null); setExtracted(null); }} className="absolute top-2 right-2 bg-black/60 text-white rounded-full p-1 hover:bg-black/80"><X size={14} /></button>
+                <img src={preview} alt="名片預覽" className="w-full rounded-xl object-contain max-h-52 bg-gray-50" />
+                <button
+                  onClick={() => { setPreview(null); setFile(null); setExtracted(null); setError(null); }}
+                  className="absolute top-2 right-2 bg-black/60 text-white rounded-full p-1 hover:bg-black/80"
+                >
+                  <X size={14} />
+                </button>
               </div>
+
               {!extracted && (
-                <button onClick={extractData} disabled={loading} className="w-full py-3 bg-blue-500 text-white rounded-xl font-semibold flex items-center justify-center gap-2 hover:bg-blue-600 disabled:opacity-60 transition-colors">
-                  {loading ? <><Loader2 size={18} className="animate-spin" />AI 辨識中...</> : <><ScanLine size={18} />開始辨識</>}
+                <button onClick={extractData} disabled={loading}
+                  className="w-full py-3 bg-blue-500 text-white rounded-xl font-semibold flex items-center justify-center gap-2 hover:bg-blue-600 disabled:opacity-60 transition-colors">
+                  {loading
+                    ? <><Loader2 size={18} className="animate-spin" />AI 辨識中...</>
+                    : <><ScanLine size={18} />開始辨識</>}
                 </button>
               )}
-              {error && <div className="bg-red-50 text-red-600 text-sm rounded-xl px-4 py-3">{error}</div>}
+
+              {error && (
+                <div className="bg-red-50 text-red-600 text-sm rounded-xl px-4 py-3">{error}</div>
+              )}
+
               {extracted && (
                 <div className="space-y-3">
-                  <div className="flex items-center gap-2 text-sm font-semibold text-gray-700"><Check size={16} className="text-green-500" />辨識完成，確認後儲存</div>
-                  {[["nameZh","中文姓名"],["nameEn","英文姓名"],["title","職稱"],["company","公司"],["email","Email"],["phone","電話"],["address","地址"],["website","網站"],["note","備註"]].map(([k, label]) => (
+                  <div className="flex items-center gap-2 text-sm font-semibold text-gray-700">
+                    <Check size={16} className="text-green-500" />辨識完成，請確認後儲存
+                  </div>
+                  {[
+                    ["nameZh", "中文姓名"],
+                    ["nameEn", "英文姓名"],
+                    ["title",  "職稱"],
+                    ["company","公司"],
+                    ["email",  "Email"],
+                    ["phone",  "電話"],
+                    ["address","地址"],
+                    ["website","網站"],
+                    ["note",   "備註"],
+                  ].map(([k, label]) => (
                     <div key={k}>
                       <label className="text-xs text-gray-400 mb-1 block">{label}</label>
-                      <input value={extracted[k] || ""} onChange={e => setExtracted(p => ({ ...p, [k]: e.target.value }))}
-                        className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-blue-400" />
+                      <input
+                        value={extracted[k] || ""}
+                        onChange={e => setExtracted(p => ({ ...p, [k]: e.target.value }))}
+                        className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-blue-400"
+                      />
                     </div>
                   ))}
                 </div>
@@ -325,12 +371,12 @@ function ScanModal({ onClose, onSave }) {
             </div>
           )}
         </div>
+
         {extracted && (
           <div className="px-5 pb-5 pt-3 border-t border-gray-100">
-            <button
-              onClick={() => { onSave({ ...extracted, id: Date.now().toString(), createdAt: new Date().toISOString(), source: "scan", synced: { notion: false, phoneContacts: false } }); onClose(); }}
-              className="w-full py-3 bg-gray-900 text-white rounded-xl font-semibold hover:bg-gray-800 transition-colors"
-            >儲存並同步</button>
+            <button onClick={handleSave} className="w-full py-3 bg-gray-900 text-white rounded-xl font-semibold hover:bg-gray-800 transition-colors">
+              儲存並同步
+            </button>
           </div>
         )}
       </div>
@@ -340,7 +386,7 @@ function ScanModal({ onClose, onSave }) {
 
 // ─── EditModal ────────────────────────────────────────────────────────────────
 function EditModal({ contact, onClose, onSave }) {
-  const [form, setForm] = useState({ ...contact });
+  const [form, setForm]   = useState({ ...contact });
   const [newTag, setNewTag] = useState("");
 
   const addTag = () => {
@@ -355,7 +401,7 @@ function EditModal({ contact, onClose, onSave }) {
     const vcf = `BEGIN:VCARD\nVERSION:3.0\nFN:${form.nameEn || form.nameZh}\nN:${form.nameZh};;;\nORG:${form.company}\nTITLE:${form.title}\nTEL:${form.phone}\nEMAIL:${form.email}\nADR:${form.address}\nURL:${form.website}\nEND:VCARD`;
     const a = document.createElement("a");
     a.href = URL.createObjectURL(new Blob([vcf], { type: "text/vcard" }));
-    a.download = `${form.nameZh || form.nameEn}.vcf`;
+    a.download = `${form.nameZh || form.nameEn || "contact"}.vcf`;
     a.click();
   };
 
@@ -366,8 +412,18 @@ function EditModal({ contact, onClose, onSave }) {
           <div className="flex items-center gap-2"><Edit3 size={18} className="text-gray-500" /><span className="font-bold text-gray-900">編輯聯絡人</span></div>
           <button onClick={onClose} className="p-2 rounded-xl hover:bg-gray-100"><X size={18} /></button>
         </div>
+
         <div className="flex-1 overflow-y-auto p-5 space-y-3">
-          {[["nameZh","中文姓名",User],["nameEn","英文姓名",User],["title","職稱",Filter],["company","公司",Building2],["email","Email",Mail],["phone","電話",Phone],["address","地址",MapPin],["website","網站",Globe]].map(([k, label, Icon]) => (
+          {[
+            ["nameZh",  "中文姓名", User],
+            ["nameEn",  "英文姓名", User],
+            ["title",   "職稱",     Filter],
+            ["company", "公司",     Building2],
+            ["email",   "Email",    Mail],
+            ["phone",   "電話",     Phone],
+            ["address", "地址",     MapPin],
+            ["website", "網站",     Globe],
+          ].map(([k, label, Icon]) => (
             <div key={k}>
               <label className="text-xs text-gray-400 mb-1 flex items-center gap-1"><Icon size={11} />{label}</label>
               <input value={form[k] || ""} onChange={e => setForm(p => ({ ...p, [k]: e.target.value }))}
@@ -381,19 +437,26 @@ function EditModal({ contact, onClose, onSave }) {
           </div>
           <div>
             <label className="text-xs text-gray-400 mb-2 block">標籤</label>
-            <div className="flex flex-wrap gap-1 mb-2">{form.tags?.map(t => <TagChip key={t} tag={t} onRemove={removeTag} />)}</div>
+            <div className="flex flex-wrap gap-1 mb-2">
+              {form.tags?.map(t => <TagChip key={t} tag={t} onRemove={removeTag} />)}
+            </div>
             <div className="flex gap-2">
-              <input value={newTag} onChange={e => setNewTag(e.target.value)} onKeyDown={e => e.key === "Enter" && addTag()}
-                placeholder="輸入標籤後按 Enter" className="flex-1 border border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-blue-400" />
+              <input value={newTag} onChange={e => setNewTag(e.target.value)}
+                onKeyDown={e => e.key === "Enter" && addTag()}
+                placeholder="輸入標籤後按 Enter"
+                className="flex-1 border border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-blue-400" />
               <button onClick={addTag} className="px-3 py-2 bg-gray-100 rounded-xl hover:bg-gray-200 transition-colors"><Plus size={16} /></button>
             </div>
           </div>
         </div>
+
         <div className="px-5 pb-5 pt-3 border-t border-gray-100 space-y-2">
           <button onClick={exportVCard} className="w-full py-2.5 border border-gray-200 text-gray-600 rounded-xl font-medium text-sm flex items-center justify-center gap-2 hover:bg-gray-50 transition-colors">
             <Download size={15} />匯出 vCard (.vcf)
           </button>
-          <button onClick={() => { onSave(form); onClose(); }} className="w-full py-3 bg-gray-900 text-white rounded-xl font-semibold hover:bg-gray-800 transition-colors">儲存並同步</button>
+          <button onClick={() => { onSave(form); onClose(); }} className="w-full py-3 bg-gray-900 text-white rounded-xl font-semibold hover:bg-gray-800 transition-colors">
+            儲存並同步
+          </button>
         </div>
       </div>
     </div>
@@ -409,16 +472,16 @@ function CSVImportModal({ onClose, onImport }) {
   const mapRow = row => ({
     id: Date.now().toString() + Math.random().toString(36).slice(2),
     createdAt: new Date().toISOString(),
-    nameZh:   row["姓名"] || row["中文姓名"] || row["name"] || "",
-    nameEn:   row["英文姓名"] || "",
-    title:    row["職稱"] || row["title"] || "",
-    company:  row["公司"] || row["company"] || "",
-    email:    row["Email"] || row["email"] || "",
-    phone:    row["電話"] || row["phone"] || "",
-    address:  row["地址"] || "",
-    website:  row["website"] || "",
-    note:     row["備註"] || "",
-    tags:     (row["標籤"] || "").split(";").map(t => t.trim()).filter(Boolean),
+    nameZh:  row["姓名"] || row["中文姓名"] || row["name"] || "",
+    nameEn:  row["英文姓名"] || "",
+    title:   row["職稱"]  || row["title"]   || "",
+    company: row["公司"]  || row["company"] || "",
+    email:   row["Email"] || row["email"]   || "",
+    phone:   row["電話"]  || row["phone"]   || "",
+    address: row["地址"]  || "",
+    website: row["website"] || "",
+    note:    row["備註"]  || "",
+    tags:    (row["標籤"] || "").split(";").map(t => t.trim()).filter(Boolean),
     source: "csv",
     synced: { notion: false, phoneContacts: false },
   });
@@ -426,14 +489,16 @@ function CSVImportModal({ onClose, onImport }) {
   const handleFile = f => {
     const reader = new FileReader();
     reader.onload = e => {
-      const lines = e.target.result.trim().split("\n").map(l => l.split(",").map(c => c.trim().replace(/^"|"$/g, "")));
+      const lines = e.target.result.trim().split("\n")
+        .map(l => l.split(",").map(c => c.trim().replace(/^"|"$/g, "")));
       const headers = lines[0];
       const parsed = lines.slice(1).map(row => {
         const o = {};
-        headers.forEach((h, i) => o[h] = row[i] || "");
+        headers.forEach((h, i) => { o[h] = row[i] || ""; });
         return mapRow(o);
       });
-      setRows(parsed); setStep(2);
+      setRows(parsed);
+      setStep(2);
     };
     reader.readAsText(f, "utf-8");
   };
@@ -445,12 +510,14 @@ function CSVImportModal({ onClose, onImport }) {
           <div className="flex items-center gap-2"><FileText size={18} className="text-amber-500" /><span className="font-bold text-gray-900">CSV 匯入</span></div>
           <button onClick={onClose} className="p-2 rounded-xl hover:bg-gray-100"><X size={18} /></button>
         </div>
+
         <div className="flex-1 overflow-y-auto p-5">
           {step === 1 ? (
-            <div onClick={() => fileRef.current.click()} className="border-2 border-dashed border-amber-200 rounded-2xl p-12 text-center cursor-pointer hover:border-amber-400 hover:bg-amber-50/30 transition-colors">
+            <div onClick={() => fileRef.current.click()}
+              className="border-2 border-dashed border-amber-200 rounded-2xl p-12 text-center cursor-pointer hover:border-amber-400 hover:bg-amber-50/30 transition-colors">
               <FileText className="mx-auto text-amber-300 mb-3" size={44} />
               <p className="font-medium text-gray-600 mb-1">點擊上傳 CSV 檔案</p>
-              <p className="text-sm text-gray-400">姓名 / 公司 / 職稱 / 電話 / Email / 標籤</p>
+              <p className="text-sm text-gray-400">支援欄位：姓名 / 公司 / 職稱 / 電話 / Email / 標籤</p>
               <input ref={fileRef} type="file" accept=".csv" className="hidden" onChange={e => handleFile(e.target.files[0])} />
             </div>
           ) : (
@@ -473,9 +540,11 @@ function CSVImportModal({ onClose, onImport }) {
             </div>
           )}
         </div>
+
         {step === 2 && (
           <div className="px-5 pb-5 pt-3 border-t border-gray-100">
-            <button onClick={() => { onImport(rows); onClose(); }} className="w-full py-3 bg-gray-900 text-white rounded-xl font-semibold hover:bg-gray-800 transition-colors">
+            <button onClick={() => { onImport(rows); onClose(); }}
+              className="w-full py-3 bg-gray-900 text-white rounded-xl font-semibold hover:bg-gray-800 transition-colors">
               匯入 {rows.length} 筆並同步
             </button>
           </div>
@@ -487,24 +556,24 @@ function CSVImportModal({ onClose, onImport }) {
 
 // ─── Main App ─────────────────────────────────────────────────────────────────
 export default function App() {
-  const [user, setUser]               = useState(null);
-  const [authReady, setAuthReady]     = useState(false);
+  const [user, setUser]                   = useState(null);
+  const [authReady, setAuthReady]         = useState(false);
   const [emailLoading, setEmailLoading]   = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
 
-  const [contacts, setContacts]       = useState([]);
-  const [dbLoading, setDbLoading]     = useState(false);
-  const [syncStatus, setSyncStatus]   = useState("idle");
+  const [contacts, setContacts]     = useState([]);
+  const [dbLoading, setDbLoading]   = useState(false);
+  const [syncStatus, setSyncStatus] = useState("idle");
 
-  const [searchQuery, setSearchQuery] = useState("");
-  const [searchMode, setSearchMode]   = useState("all");
-  const [selectedIds, setSelectedIds] = useState([]);
-  const [viewMode, setViewMode]       = useState("grid");
-  const [activeTag, setActiveTag]     = useState(null);
-  const [showScan, setShowScan]       = useState(false);
-  const [showCSV, setShowCSV]         = useState(false);
-  const [editingContact, setEditingContact] = useState(null);
-  const [toast, setToast]             = useState(null);
+  const [searchQuery, setSearchQuery]         = useState("");
+  const [searchMode, setSearchMode]           = useState("all");
+  const [selectedIds, setSelectedIds]         = useState([]);
+  const [viewMode, setViewMode]               = useState("grid");
+  const [activeTag, setActiveTag]             = useState(null);
+  const [showScan, setShowScan]               = useState(false);
+  const [showCSV, setShowCSV]                 = useState(false);
+  const [editingContact, setEditingContact]   = useState(null);
+  const [toast, setToast]                     = useState(null);
 
   const showToast = msg => { setToast(msg); setTimeout(() => setToast(null), 3000); };
 
@@ -520,8 +589,16 @@ export default function App() {
     setDbLoading(true);
     const q = query(contactsRef(user.uid), orderBy("createdAt", "desc"));
     const unsub = onSnapshot(q,
-      snap => { setContacts(snap.docs.map(d => ({ id: d.id, ...d.data() }))); setDbLoading(false); setSyncStatus("ok"); },
-      err  => { console.error(err); setDbLoading(false); setSyncStatus("error"); }
+      snap => {
+        setContacts(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+        setDbLoading(false);
+        setSyncStatus("ok");
+      },
+      err => {
+        console.error(err);
+        setDbLoading(false);
+        setSyncStatus("error");
+      }
     );
     return unsub;
   }, [user]);
@@ -567,7 +644,10 @@ export default function App() {
       const { id, ...data } = contact;
       await setDoc(contactRef(user.uid, id), { ...data, updatedAt: new Date().toISOString() }, { merge: true });
       setSyncStatus("ok");
-    } catch (e) { setSyncStatus("error"); showToast("⚠️ 同步失敗，請重試"); }
+    } catch (e) {
+      setSyncStatus("error");
+      showToast("⚠️ 同步失敗，請重試");
+    }
   };
 
   const handleDelete = async id => {
@@ -587,7 +667,10 @@ export default function App() {
       await Promise.all(rows.map(r => saveContact(r)));
       setSyncStatus("ok");
       showToast(`✅ 已匯入並同步 ${rows.length} 筆`);
-    } catch (e) { setSyncStatus("error"); showToast("⚠️ 部分匯入失敗"); }
+    } catch (e) {
+      setSyncStatus("error");
+      showToast("⚠️ 部分匯入失敗");
+    }
   };
 
   const batchDelete = async () => {
@@ -600,7 +683,9 @@ export default function App() {
 
   const batchExportVCard = () => {
     const sel = contacts.filter(c => selectedIds.includes(c.id));
-    const vcf = sel.map(c => `BEGIN:VCARD\nVERSION:3.0\nFN:${c.nameEn || c.nameZh}\nN:${c.nameZh};;;\nORG:${c.company}\nTITLE:${c.title}\nTEL:${c.phone}\nEMAIL:${c.email}\nEND:VCARD`).join("\n\n");
+    const vcf = sel.map(c =>
+      `BEGIN:VCARD\nVERSION:3.0\nFN:${c.nameEn || c.nameZh}\nN:${c.nameZh};;;\nORG:${c.company}\nTITLE:${c.title}\nTEL:${c.phone}\nEMAIL:${c.email}\nEND:VCARD`
+    ).join("\n\n");
     const a = document.createElement("a");
     a.href = URL.createObjectURL(new Blob([vcf], { type: "text/vcard" }));
     a.download = "contacts.vcf";
@@ -622,7 +707,7 @@ export default function App() {
     return Object.values(c).join(" ").toLowerCase().includes(q);
   });
 
-  // ── Render ─────────────────────────────────────────────────────────────────
+  // ── Loading / Auth gate ────────────────────────────────────────────────────
   if (!authReady) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
@@ -647,22 +732,27 @@ export default function App() {
     );
   }
 
+  // ── Main UI ────────────────────────────────────────────────────────────────
   return (
     <div className="min-h-screen bg-gray-50">
-      {/* ── Header ── */}
+      {/* Header */}
       <header className="bg-white border-b border-gray-100 sticky top-0 z-30">
         <div className="max-w-6xl mx-auto px-4 py-3 flex items-center gap-3">
           <div className="flex items-center gap-2 flex-shrink-0">
-            <div className="w-8 h-8 bg-gray-900 rounded-xl flex items-center justify-center"><ScanLine size={16} className="text-white" /></div>
+            <div className="w-8 h-8 bg-gray-900 rounded-xl flex items-center justify-center">
+              <ScanLine size={16} className="text-white" />
+            </div>
             <span className="font-black text-gray-900 text-lg hidden sm:block">CardVault</span>
           </div>
 
+          {/* Search */}
           <div className="flex-1 flex items-center gap-2 bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 focus-within:border-blue-400 transition-colors">
             <Search size={15} className="text-gray-400 flex-shrink-0" />
             <input value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="搜尋聯絡人..."
               className="flex-1 bg-transparent text-sm outline-none text-gray-800 placeholder-gray-400 min-w-0" />
             <div className="relative flex-shrink-0">
-              <select value={searchMode} onChange={e => setSearchMode(e.target.value)} className="appearance-none bg-transparent text-xs text-gray-500 pr-4 cursor-pointer focus:outline-none">
+              <select value={searchMode} onChange={e => setSearchMode(e.target.value)}
+                className="appearance-none bg-transparent text-xs text-gray-500 pr-4 cursor-pointer focus:outline-none">
                 <option value="all">全部</option>
                 <option value="company">公司</option>
                 <option value="nameZh">中文姓名</option>
@@ -673,21 +763,26 @@ export default function App() {
             </div>
           </div>
 
+          {/* Actions */}
           <div className="flex items-center gap-2 flex-shrink-0">
-            {/* Sync status */}
-            <div className="hidden sm:flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg bg-gray-50 border border-gray-100">
+            {/* Sync pill */}
+            <div className="hidden sm:flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg bg-gray-50 border border-gray-100 select-none">
               {syncStatus === "syncing" && <><Loader2 size={11} className="animate-spin text-blue-400" /><span className="text-gray-400">同步中</span></>}
               {syncStatus === "ok"      && <><Cloud size={11} className="text-green-500" /><span className="text-gray-400">已同步</span></>}
               {syncStatus === "error"   && <><CloudOff size={11} className="text-red-400" /><span className="text-red-400">失敗</span></>}
               {syncStatus === "idle"    && <><RefreshCw size={11} className="text-gray-300" /><span className="text-gray-300">待機</span></>}
             </div>
-            <button onClick={() => setViewMode(v => v === "grid" ? "list" : "grid")} className="p-2 rounded-xl hover:bg-gray-100 text-gray-500 hidden md:flex">
+
+            <button onClick={() => setViewMode(v => v === "grid" ? "list" : "grid")}
+              className="p-2 rounded-xl hover:bg-gray-100 text-gray-500 hidden md:flex">
               {viewMode === "grid" ? <List size={18} /> : <Grid3x3 size={18} />}
             </button>
-            <button onClick={() => setShowCSV(true)} className="px-3 py-2 text-sm border border-gray-200 rounded-xl text-gray-600 hover:bg-gray-50 hidden sm:flex items-center gap-1.5">
+            <button onClick={() => setShowCSV(true)}
+              className="px-3 py-2 text-sm border border-gray-200 rounded-xl text-gray-600 hover:bg-gray-50 hidden sm:flex items-center gap-1.5">
               <FileText size={15} />CSV
             </button>
-            <button onClick={() => setShowScan(true)} className="px-3 py-2 text-sm bg-gray-900 text-white rounded-xl hover:bg-gray-800 flex items-center gap-1.5 font-medium">
+            <button onClick={() => setShowScan(true)}
+              className="px-3 py-2 text-sm bg-gray-900 text-white rounded-xl hover:bg-gray-800 flex items-center gap-1.5 font-medium">
               <Camera size={15} />掃描
             </button>
 
@@ -696,7 +791,9 @@ export default function App() {
               <button className="w-8 h-8 rounded-full overflow-hidden border-2 border-gray-200 hover:border-gray-400 transition-colors flex-shrink-0">
                 {user.photoURL
                   ? <img src={user.photoURL} alt="" className="w-full h-full object-cover" />
-                  : <div className="w-full h-full bg-gray-200 flex items-center justify-center text-xs font-bold text-gray-600">{(user.displayName || user.email)?.[0]?.toUpperCase()}</div>
+                  : <div className="w-full h-full bg-gray-200 flex items-center justify-center text-xs font-bold text-gray-600">
+                      {(user.displayName || user.email)?.[0]?.toUpperCase()}
+                    </div>
                 }
               </button>
               <div className="absolute right-0 top-10 bg-white border border-gray-100 rounded-2xl shadow-xl p-3 min-w-[190px] opacity-0 group-hover:opacity-100 pointer-events-none group-hover:pointer-events-auto transition-opacity z-50">
@@ -705,7 +802,8 @@ export default function App() {
                   <p className="text-xs text-gray-400 truncate">{user.email}</p>
                   <p className="text-xs text-gray-300 mt-1">共 {contacts.length} 位聯絡人</p>
                 </div>
-                <button onClick={handleLogout} className="w-full flex items-center gap-2 px-2 py-2 rounded-xl text-sm text-red-500 hover:bg-red-50 transition-colors">
+                <button onClick={handleLogout}
+                  className="w-full flex items-center gap-2 px-2 py-2 rounded-xl text-sm text-red-500 hover:bg-red-50 transition-colors">
                   <LogOut size={14} />登出
                 </button>
               </div>
@@ -715,25 +813,30 @@ export default function App() {
       </header>
 
       <div className="max-w-6xl mx-auto px-4 py-4 flex gap-5">
-        {/* ── Sidebar ── */}
+        {/* Sidebar */}
         <aside className="w-48 flex-shrink-0 hidden md:block">
           <div className="bg-white border border-gray-100 rounded-2xl p-4 sticky top-20">
             <div className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3 flex items-center gap-1.5">
               <Filter size={11} />標籤篩選
             </div>
-            <button onClick={() => setActiveTag(null)} className={`w-full text-left px-3 py-2 rounded-xl text-sm mb-1 flex items-center justify-between ${!activeTag ? "bg-gray-900 text-white font-medium" : "text-gray-600 hover:bg-gray-50"}`}>
-              <span>全部</span><span className={`text-xs ${!activeTag ? "text-white/70" : "text-gray-400"}`}>{contacts.length}</span>
+            <button onClick={() => setActiveTag(null)}
+              className={`w-full text-left px-3 py-2 rounded-xl text-sm mb-1 flex items-center justify-between ${!activeTag ? "bg-gray-900 text-white font-medium" : "text-gray-600 hover:bg-gray-50"}`}>
+              <span>全部</span>
+              <span className={`text-xs ${!activeTag ? "text-white/70" : "text-gray-400"}`}>{contacts.length}</span>
             </button>
             {allTags.map(tag => (
-              <button key={tag} onClick={() => setActiveTag(t => t === tag ? null : tag)} className={`w-full text-left px-3 py-2 rounded-xl text-sm mb-1 flex items-center justify-between ${activeTag === tag ? "bg-blue-500 text-white font-medium" : "text-gray-600 hover:bg-gray-50"}`}>
+              <button key={tag} onClick={() => setActiveTag(t => t === tag ? null : tag)}
+                className={`w-full text-left px-3 py-2 rounded-xl text-sm mb-1 flex items-center justify-between ${activeTag === tag ? "bg-blue-500 text-white font-medium" : "text-gray-600 hover:bg-gray-50"}`}>
                 <span className="truncate">{tag}</span>
-                <span className={`text-xs flex-shrink-0 ${activeTag === tag ? "text-white/70" : "text-gray-400"}`}>{contacts.filter(c => c.tags?.includes(tag)).length}</span>
+                <span className={`text-xs flex-shrink-0 ${activeTag === tag ? "text-white/70" : "text-gray-400"}`}>
+                  {contacts.filter(c => c.tags?.includes(tag)).length}
+                </span>
               </button>
             ))}
           </div>
         </aside>
 
-        {/* ── Main ── */}
+        {/* Main */}
         <main className="flex-1 min-w-0">
           <div className="flex items-center justify-between mb-4">
             <p className="text-sm text-gray-500">
@@ -742,8 +845,13 @@ export default function App() {
               {searchQuery && <span> · <strong className="text-blue-600">「{searchQuery}」</strong></span>}
             </p>
             <div className="flex items-center gap-2">
-              {selectedIds.length > 0 && <span className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded-full">已選 {selectedIds.length}</span>}
-              <button onClick={() => setViewMode(v => v === "grid" ? "list" : "grid")} className="p-1.5 rounded-lg hover:bg-white text-gray-400 md:hidden"><Grid3x3 size={16} /></button>
+              {selectedIds.length > 0 && (
+                <span className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded-full">已選 {selectedIds.length}</span>
+              )}
+              <button onClick={() => setViewMode(v => v === "grid" ? "list" : "grid")}
+                className="p-1.5 rounded-lg hover:bg-white text-gray-400 md:hidden">
+                <Grid3x3 size={16} />
+              </button>
             </div>
           </div>
 
@@ -755,47 +863,64 @@ export default function App() {
           ) : filtered.length === 0 ? (
             <div className="text-center py-20 text-gray-400">
               <User size={48} className="mx-auto mb-3 opacity-20" />
-              <p className="font-medium">{contacts.length === 0 ? "還沒有聯絡人" : "沒有符合條件的聯絡人"}</p>
-              <p className="text-sm mt-1">{contacts.length === 0 ? "點擊右上角「掃描」開始建立" : "試試調整搜尋條件"}</p>
+              <p className="font-medium">
+                {contacts.length === 0 ? "還沒有聯絡人" : "沒有符合條件的聯絡人"}
+              </p>
+              <p className="text-sm mt-1">
+                {contacts.length === 0 ? "點擊右上角「掃描」開始建立" : "試試調整搜尋條件"}
+              </p>
             </div>
           ) : (
-            <div className={viewMode === "grid" ? "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3" : "space-y-2"}>
+            <div className={viewMode === "grid"
+              ? "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3"
+              : "space-y-2"}>
               {filtered.map(c => (
-                <ContactCard key={c.id} contact={c} onEdit={setEditingContact} onDelete={handleDelete}
-                  onSelect={handleSelect} isSelected={selectedIds.includes(c.id)} viewMode={viewMode} />
+                <ContactCard key={c.id} contact={c}
+                  onEdit={setEditingContact} onDelete={handleDelete}
+                  onSelect={handleSelect} isSelected={selectedIds.includes(c.id)}
+                  viewMode={viewMode} />
               ))}
             </div>
           )}
         </main>
       </div>
 
-      {/* ── Batch bar ── */}
+      {/* Batch action bar */}
       {selectedIds.length > 0 && (
         <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-gray-900 text-white rounded-2xl px-5 py-3 flex items-center gap-4 shadow-2xl z-40">
           <span className="text-sm font-medium">已選 {selectedIds.length} 筆</span>
-          <button onClick={batchExportVCard} className="flex items-center gap-1.5 text-sm bg-white/10 hover:bg-white/20 px-3 py-1.5 rounded-xl transition-colors"><Download size={14} />匯出 vCard</button>
-          <button onClick={batchDelete} className="flex items-center gap-1.5 text-sm bg-red-500/80 hover:bg-red-500 px-3 py-1.5 rounded-xl transition-colors"><Trash2 size={14} />刪除</button>
-          <button onClick={() => setSelectedIds([])} className="p-1.5 hover:bg-white/10 rounded-xl"><X size={16} /></button>
+          <button onClick={batchExportVCard} className="flex items-center gap-1.5 text-sm bg-white/10 hover:bg-white/20 px-3 py-1.5 rounded-xl transition-colors">
+            <Download size={14} />匯出 vCard
+          </button>
+          <button onClick={batchDelete} className="flex items-center gap-1.5 text-sm bg-red-500/80 hover:bg-red-500 px-3 py-1.5 rounded-xl transition-colors">
+            <Trash2 size={14} />刪除
+          </button>
+          <button onClick={() => setSelectedIds([])} className="p-1.5 hover:bg-white/10 rounded-xl">
+            <X size={16} />
+          </button>
         </div>
       )}
 
-      {/* ── Mobile FAB ── */}
+      {/* Mobile FAB */}
       <div className="fixed bottom-6 right-4 sm:hidden z-30">
-        <button onClick={() => setShowScan(true)} className="w-14 h-14 bg-gray-900 text-white rounded-2xl shadow-lg flex items-center justify-center hover:bg-gray-800 transition-colors">
+        <button onClick={() => setShowScan(true)}
+          className="w-14 h-14 bg-gray-900 text-white rounded-2xl shadow-lg flex items-center justify-center hover:bg-gray-800 transition-colors">
           <Camera size={22} />
         </button>
       </div>
 
-      {/* ── Toast ── */}
+      {/* Toast */}
       {toast && (
-        <div className="fixed top-20 right-4 bg-gray-900 text-white text-sm px-4 py-3 rounded-xl shadow-lg z-50 animate-fade-in">
+        <div className="fixed top-20 right-4 bg-gray-900 text-white text-sm px-4 py-3 rounded-xl shadow-lg z-50">
           {toast}
         </div>
       )}
 
       {showScan && <ScanModal onClose={() => setShowScan(false)} onSave={handleScanSave} />}
       {showCSV  && <CSVImportModal onClose={() => setShowCSV(false)} onImport={handleCSVImport} />}
-      {editingContact && <EditModal contact={editingContact} onClose={() => setEditingContact(null)} onSave={handleEditSave} />}
+      {editingContact && (
+        <EditModal contact={editingContact} onClose={() => setEditingContact(null)} onSave={handleEditSave} />
+      )}
     </div>
   );
 }
