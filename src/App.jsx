@@ -44,6 +44,25 @@ const AUTH_ERRORS = {
 const contactsRef = (uid) => collection(db, "users", uid, "contacts");
 const contactRef  = (uid, id) => doc(db, "users", uid, "contacts", id);
 
+// ─── Image compression helper ─────────────────────────────────────────────────
+const compressImage = (dataUrl) =>
+  new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const MAX = 1200;
+      let { width, height } = img;
+      if (width > MAX || height > MAX) {
+        if (width > height) { height = Math.round((height * MAX) / width); width = MAX; }
+        else { width = Math.round((width * MAX) / height); height = MAX; }
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = width; canvas.height = height;
+      canvas.getContext("2d").drawImage(img, 0, 0, width, height);
+      resolve(canvas.toDataURL("image/jpeg", 0.82));
+    };
+    img.src = dataUrl;
+  });
+
 // ─── Avatar ───────────────────────────────────────────────────────────────────
 function Avatar({ contact }) {
   const initials = contact.nameZh
@@ -181,7 +200,6 @@ function LoginScreen({ onEmailLogin, onGoogleLogin, loading, googleLoading }) {
           <p className="text-gray-400 text-sm">AI 名片管理 · 跨裝置即時同步</p>
         </div>
 
-        {/* Google Sign In */}
         <button
           onClick={handleGoogle}
           disabled={googleLoading || loading}
@@ -250,52 +268,46 @@ function ScanModal({ onClose, onSave }) {
     reader.readAsDataURL(f);
   };
 
-  // 壓縮圖片到 1200px 以內，JPEG 品質 0.8，確保不超過 Vercel 4.5MB 限制
-  const compressImage = (dataUrl) =>
-    new Promise((resolve) => {
-      const img = new Image();
-      img.onload = () => {
-        const MAX = 1200;
-        let { width, height } = img;
-        if (width > MAX || height > MAX) {
-          if (width > height) { height = Math.round((height * MAX) / width); width = MAX; }
-          else { width = Math.round((width * MAX) / height); height = MAX; }
-        }
-        const canvas = document.createElement("canvas");
-        canvas.width = width; canvas.height = height;
-        canvas.getContext("2d").drawImage(img, 0, 0, width, height);
-        resolve(canvas.toDataURL("image/jpeg", 0.82));
-      };
-      img.src = dataUrl;
-    });
-
+  // ── 直接從前端呼叫 Gemini API ────────────────────────────────────────────
   const extractData = async () => {
     setLoading(true);
     setError(null);
     try {
-      // 先壓縮，再取 base64
+      // 壓縮圖片，避免過大
       const compressed = await compressImage(preview);
       const base64 = compressed.split(",")[1];
 
-      // ── 呼叫 Vercel API Route（背後是 Gemini）────────────────────────────
-      const r = await fetch("/api/scan", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          imageBase64: base64,
-          mediaType: "image/jpeg",
-        }),
-      });
+      const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+      const r = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            contents: [{
+              parts: [
+                { inline_data: { mime_type: "image/jpeg", data: base64 } },
+                { text: `從這張名片擷取資訊，只回傳 JSON，不要有任何其他文字、說明或 markdown：
+{"nameZh":"","nameEn":"","title":"","company":"","email":"","phone":"","address":"","website":""}` }
+              ]
+            }],
+            generationConfig: { temperature: 0, maxOutputTokens: 512 }
+          })
+        }
+      );
 
-      const result = await r.json();
+      const data = await r.json();
 
-      if (!result.success) {
-        throw new Error(result.error || "辨識失敗");
-      }
+      if (data.error) throw new Error(data.error.message);
 
-      setExtracted({ ...result.data, tags: [], note: "" });
+      const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
+      // 容錯解析：用正則抓出 JSON 物件
+      const match = text.match(/\{[\s\S]*\}/);
+      const parsed = JSON.parse(match ? match[0] : "{}");
+      setExtracted({ ...parsed, tags: [], note: "" });
+
     } catch (e) {
-      console.error(e);
+      console.error("Gemini error:", e.message);
       setError("辨識失敗，請重試或手動填寫");
       setExtracted({ nameZh: "", nameEn: "", title: "", company: "", email: "", phone: "", address: "", website: "", tags: [], note: "" });
     }
@@ -358,9 +370,7 @@ function ScanModal({ onClose, onSave }) {
                 </button>
               )}
 
-              {error && (
-                <div className="bg-red-50 text-red-600 text-sm rounded-xl px-4 py-3">{error}</div>
-              )}
+              {error && <div className="bg-red-50 text-red-600 text-sm rounded-xl px-4 py-3">{error}</div>}
 
               {extracted && (
                 <div className="space-y-3">
@@ -395,7 +405,8 @@ function ScanModal({ onClose, onSave }) {
 
         {extracted && (
           <div className="px-5 pb-5 pt-3 border-t border-gray-100">
-            <button onClick={handleSave} className="w-full py-3 bg-gray-900 text-white rounded-xl font-semibold hover:bg-gray-800 transition-colors">
+            <button onClick={handleSave}
+              className="w-full py-3 bg-gray-900 text-white rounded-xl font-semibold hover:bg-gray-800 transition-colors">
               儲存並同步
             </button>
           </div>
@@ -407,7 +418,7 @@ function ScanModal({ onClose, onSave }) {
 
 // ─── EditModal ────────────────────────────────────────────────────────────────
 function EditModal({ contact, onClose, onSave }) {
-  const [form, setForm]   = useState({ ...contact });
+  const [form, setForm]     = useState({ ...contact });
   const [newTag, setNewTag] = useState("");
 
   const addTag = () => {
@@ -475,7 +486,8 @@ function EditModal({ contact, onClose, onSave }) {
           <button onClick={exportVCard} className="w-full py-2.5 border border-gray-200 text-gray-600 rounded-xl font-medium text-sm flex items-center justify-center gap-2 hover:bg-gray-50 transition-colors">
             <Download size={15} />匯出 vCard (.vcf)
           </button>
-          <button onClick={() => { onSave(form); onClose(); }} className="w-full py-3 bg-gray-900 text-white rounded-xl font-semibold hover:bg-gray-800 transition-colors">
+          <button onClick={() => { onSave(form); onClose(); }}
+            className="w-full py-3 bg-gray-900 text-white rounded-xl font-semibold hover:bg-gray-800 transition-colors">
             儲存並同步
           </button>
         </div>
@@ -586,15 +598,15 @@ export default function App() {
   const [dbLoading, setDbLoading]   = useState(false);
   const [syncStatus, setSyncStatus] = useState("idle");
 
-  const [searchQuery, setSearchQuery]         = useState("");
-  const [searchMode, setSearchMode]           = useState("all");
-  const [selectedIds, setSelectedIds]         = useState([]);
-  const [viewMode, setViewMode]               = useState("grid");
-  const [activeTag, setActiveTag]             = useState(null);
-  const [showScan, setShowScan]               = useState(false);
-  const [showCSV, setShowCSV]                 = useState(false);
-  const [editingContact, setEditingContact]   = useState(null);
-  const [toast, setToast]                     = useState(null);
+  const [searchQuery, setSearchQuery]       = useState("");
+  const [searchMode, setSearchMode]         = useState("all");
+  const [selectedIds, setSelectedIds]       = useState([]);
+  const [viewMode, setViewMode]             = useState("grid");
+  const [activeTag, setActiveTag]           = useState(null);
+  const [showScan, setShowScan]             = useState(false);
+  const [showCSV, setShowCSV]               = useState(false);
+  const [editingContact, setEditingContact] = useState(null);
+  const [toast, setToast]                   = useState(null);
 
   const showToast = msg => { setToast(msg); setTimeout(() => setToast(null), 3000); };
 
@@ -766,7 +778,6 @@ export default function App() {
             <span className="font-black text-gray-900 text-lg hidden sm:block">CardVault</span>
           </div>
 
-          {/* Search */}
           <div className="flex-1 flex items-center gap-2 bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 focus-within:border-blue-400 transition-colors">
             <Search size={15} className="text-gray-400 flex-shrink-0" />
             <input value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="搜尋聯絡人..."
@@ -784,16 +795,13 @@ export default function App() {
             </div>
           </div>
 
-          {/* Actions */}
           <div className="flex items-center gap-2 flex-shrink-0">
-            {/* Sync pill */}
             <div className="hidden sm:flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg bg-gray-50 border border-gray-100 select-none">
               {syncStatus === "syncing" && <><Loader2 size={11} className="animate-spin text-blue-400" /><span className="text-gray-400">同步中</span></>}
               {syncStatus === "ok"      && <><Cloud size={11} className="text-green-500" /><span className="text-gray-400">已同步</span></>}
               {syncStatus === "error"   && <><CloudOff size={11} className="text-red-400" /><span className="text-red-400">失敗</span></>}
               {syncStatus === "idle"    && <><RefreshCw size={11} className="text-gray-300" /><span className="text-gray-300">待機</span></>}
             </div>
-
             <button onClick={() => setViewMode(v => v === "grid" ? "list" : "grid")}
               className="p-2 rounded-xl hover:bg-gray-100 text-gray-500 hidden md:flex">
               {viewMode === "grid" ? <List size={18} /> : <Grid3x3 size={18} />}
@@ -807,7 +815,6 @@ export default function App() {
               <Camera size={15} />掃描
             </button>
 
-            {/* User menu */}
             <div className="relative group">
               <button className="w-8 h-8 rounded-full overflow-hidden border-2 border-gray-200 hover:border-gray-400 transition-colors flex-shrink-0">
                 {user.photoURL
