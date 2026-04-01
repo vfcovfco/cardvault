@@ -418,9 +418,9 @@ function ScanModal({ onClose, onSave }) {
             contents: [{
               parts: [
                 { inline_data: { mime_type: "image/jpeg", data: base64 } },
-                { text: `Extract business card info. Return ONLY this JSON, no other text:
-{"nameZh":"","nameEn":"","title":"","company":"","email":"","phoneOffice":"","phoneMobile":"","address":"","website":"","socials":[]}
-For socials array use format: [{"platform":"LINE","account":"xxx"}]. Only include if found. Address: include both Chinese and English if available, prefer Chinese. Phone: separate office (T:/office) from mobile (M:/cell). Fax ignored.` }
+                { text: "Extract business card info. Return ONLY this JSON, no other text:\n" +
+  '{"nameZh":"","nameEn":"","title":"","company":"","email":"","phoneOffice":"","phoneMobile":"","address":"","website":"","socials":[]}\n' +
+  "For socials array use format: [{\"platform\":\"LINE\",\"account\":\"xxx\"}]. Only include if found. Address: include both Chinese and English if available, prefer Chinese. Phone: separate office (T:/office) from mobile (M:/cell). Fax ignored." }
             }],
             generationConfig: { temperature: 0, maxOutputTokens: 2048 }
           })
