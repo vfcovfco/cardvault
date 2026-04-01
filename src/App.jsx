@@ -301,6 +301,7 @@ function ScanModal({ onClose, onSave }) {
 
       if (data.error) throw new Error(data.error.message);
 
+      console.log("Gemini raw response:", JSON.stringify(data));
       const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
       // 容錯解析：用正則抓出 JSON 物件
       const match = text.match(/\{[\s\S]*\}/);
