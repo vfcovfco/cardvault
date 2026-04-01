@@ -220,7 +220,7 @@ function ContactForm({ data, onChange, showTags = true }) {
           </div>
         </div>
         <div>
-          <label className="text-xs text-gray-400 mb-1 flex items-center gap-1"><MapPin size={11}/>地址</label>
+          <label className="text-xs text-gray-400 mb-1 flex items-center gap-1"><MapPin size={11}/>地址（英文）</label>
           <input value={data.address||""} onChange={e=>set("address",e.target.value)}
             className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-blue-400 bg-white"/>
         </div>
@@ -418,9 +418,12 @@ function ScanModal({ onClose, onSave }) {
             contents: [{
               parts: [
                 { inline_data: { mime_type: "image/jpeg", data: base64 } },
-                { text: "Extract business card info. Return ONLY this JSON, no other text:\n" +
-  '{"nameZh":"","nameEn":"","title":"","company":"","email":"","phoneOffice":"","phoneMobile":"","address":"","website":"","socials":[]}\n' +
-  "For socials array use format: [{\"platform\":\"LINE\",\"account\":\"xxx\"}]. Only include if found. Address: include both Chinese and English if available, prefer Chinese. Phone: separate office (T:/office) from mobile (M:/cell). Fax ignored." }
+                { text: "Extract business card info. Return ONLY this JSON, no other text:\n"
+                  + '{"nameZh":"","nameEn":"","title":"","company":"","email":"","phoneOffice":"","phoneMobile":"","address":"","website":"","socials":[]}\n'
+                  + "socials format: [{\"platform\":\"LINE\",\"account\":\"xxx\"}], only if found. "
+                  + "Address: prefer Chinese, include both if available. "
+                  + "Phone: phoneOffice=office/T line, phoneMobile=mobile/M/cell. Ignore fax." }
+              ]
             }],
             generationConfig: { temperature: 0, maxOutputTokens: 2048 }
           })
