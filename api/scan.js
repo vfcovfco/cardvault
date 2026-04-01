@@ -14,7 +14,13 @@ export default async function handler(req, res) {
     }
 
     const apiKey = process.env.GEMINI_API_KEY;
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-04-17:generateContent?key=${apiKey}`;
+
+    if (!apiKey) {
+      return res.status(500).json({ error: "GEMINI_API_KEY not configured" });
+    }
+
+    // gemini-2.5-flash：目前最新穩定版，支援圖片輸入，有免費額度
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
 
     const response = await fetch(url, {
       method: "POST",
@@ -49,7 +55,7 @@ export default async function handler(req, res) {
     const data = await response.json();
 
     if (data.error) {
-      console.error("Gemini error:", data.error);
+      console.error("Gemini error:", JSON.stringify(data.error));
       return res.status(500).json({ error: data.error.message || "Gemini API 錯誤" });
     }
 
@@ -59,7 +65,7 @@ export default async function handler(req, res) {
 
     return res.status(200).json({ success: true, data: parsed });
   } catch (err) {
-    console.error("Scan API error:", err);
+    console.error("Scan API error:", err.message);
     return res.status(500).json({ error: "辨識失敗，請重試" });
   }
 }
