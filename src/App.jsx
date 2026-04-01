@@ -393,7 +393,8 @@ function ScanModal({ onClose, onSave }) {
   const [loading, setLoading]     = useState(false);
   const [formData, setFormData]   = useState(null);
   const [error, setError]         = useState(null);
-  const fileRef = useRef();
+  const fileRef   = useRef();
+  const cameraRef = useRef();
 
   const handleFile = (f) => {
     setFile(f);
@@ -459,12 +460,25 @@ function ScanModal({ onClose, onSave }) {
         </div>
         <div className="flex-1 overflow-y-auto p-5 space-y-4">
           {!preview ? (
-            <div onDrop={e=>{e.preventDefault();handleFile(e.dataTransfer.files[0]);}} onDragOver={e=>e.preventDefault()} onClick={()=>fileRef.current.click()}
-              className="border-2 border-dashed border-gray-200 rounded-2xl p-12 text-center cursor-pointer hover:border-blue-300 hover:bg-blue-50/30 transition-colors">
-              <Camera className="mx-auto text-gray-300 mb-3" size={44}/>
-              <p className="font-medium text-gray-600 mb-1">點擊上傳名片照片</p>
-              <p className="text-sm text-gray-400">或拖拽圖片到這裡 · JPG / PNG</p>
-              <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={e=>handleFile(e.target.files[0])}/>
+            <div className="space-y-3">
+              <button onClick={()=>cameraRef.current.click()}
+                className="w-full py-10 bg-gray-900 text-white rounded-2xl flex flex-col items-center gap-3 hover:bg-gray-800 transition-all active:scale-95">
+                <Camera size={48}/>
+                <div className="text-center">
+                  <p className="font-bold text-xl">拍照掃描</p>
+                  <p className="text-sm text-white/50 mt-1">點此開啟相機拍攝名片</p>
+                </div>
+              </button>
+              <button onClick={()=>fileRef.current.click()}
+                className="w-full py-5 border-2 border-gray-200 text-gray-600 rounded-2xl flex items-center justify-center gap-3 hover:border-gray-300 hover:bg-gray-50 transition-colors">
+                <FileText size={20} className="text-gray-400"/>
+                <div className="text-left">
+                  <p className="font-medium text-gray-700">從相簿選取</p>
+                  <p className="text-xs text-gray-400">選擇已拍好的名片照片</p>
+                </div>
+              </button>
+              <input ref={cameraRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={e=>e.target.files[0]&&handleFile(e.target.files[0])}/>
+              <input ref={fileRef}   type="file" accept="image/*" className="hidden"               onChange={e=>e.target.files[0]&&handleFile(e.target.files[0])}/>
             </div>
           ) : (
             <div className="space-y-4">
@@ -765,17 +779,20 @@ export default function App() {
     <div className="min-h-screen bg-gray-50">
       {/* Header */}
       <header className="bg-white border-b border-gray-100 sticky top-0 z-30">
-        <div className="max-w-6xl mx-auto px-4 py-3 flex items-center gap-3">
+        <div className="max-w-6xl mx-auto px-3 py-2.5 flex items-center gap-2">
+          {/* Logo — 手機只顯示圖示 */}
           <div className="flex items-center gap-2 flex-shrink-0">
             <div className="w-8 h-8 bg-gray-900 rounded-xl flex items-center justify-center"><ScanLine size={16} className="text-white"/></div>
-            <span className="font-black text-gray-900 text-lg hidden sm:block">CardVault</span>
+            <span className="font-black text-gray-900 text-base hidden sm:block">CardVault</span>
           </div>
 
-          <div className="flex-1 flex items-center gap-2 bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 focus-within:border-blue-400 transition-colors">
-            <Search size={15} className="text-gray-400 flex-shrink-0"/>
-            <input value={searchQuery} onChange={e=>setSearchQuery(e.target.value)} placeholder="搜尋聯絡人..."
-              className="flex-1 bg-transparent text-sm outline-none text-gray-800 placeholder-gray-400 min-w-0"/>
-            <div className="relative flex-shrink-0">
+          {/* 搜尋列 */}
+          <div className="flex-1 flex items-center gap-1.5 bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 focus-within:border-blue-400 transition-colors min-w-0">
+            <Search size={14} className="text-gray-400 flex-shrink-0"/>
+            <input value={searchQuery} onChange={e=>setSearchQuery(e.target.value)} placeholder="搜尋..."
+              className="flex-1 bg-transparent text-sm outline-none text-gray-800 placeholder-gray-400 min-w-0 w-0"/>
+            {/* 搜尋模式 — 手機隱藏 */}
+            <div className="relative flex-shrink-0 hidden sm:block">
               <select value={searchMode} onChange={e=>setSearchMode(e.target.value)} className="appearance-none bg-transparent text-xs text-gray-500 pr-4 cursor-pointer focus:outline-none">
                 <option value="all">全部</option>
                 <option value="company">公司</option>
@@ -787,8 +804,10 @@ export default function App() {
             </div>
           </div>
 
-          <div className="flex items-center gap-2 flex-shrink-0">
-            <div className="hidden sm:flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg bg-gray-50 border border-gray-100 select-none">
+          {/* 右側操作區 */}
+          <div className="flex items-center gap-1.5 flex-shrink-0">
+            {/* 同步狀態 — 手機隱藏 */}
+            <div className="hidden md:flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg bg-gray-50 border border-gray-100 select-none">
               {syncStatus==="syncing" && <><Loader2 size={11} className="animate-spin text-blue-400"/><span className="text-gray-400">同步中</span></>}
               {syncStatus==="ok"      && <><Cloud size={11} className="text-green-500"/><span className="text-gray-400">已同步</span></>}
               {syncStatus==="error"   && <><CloudOff size={11} className="text-red-400"/><span className="text-red-400">失敗</span></>}
@@ -797,15 +816,14 @@ export default function App() {
             <button onClick={()=>setViewMode(v=>v==="grid"?"list":"grid")} className="p-2 rounded-xl hover:bg-gray-100 text-gray-500 hidden md:flex">
               {viewMode==="grid"?<List size={18}/>:<Grid3x3 size={18}/>}
             </button>
-            <button onClick={()=>setShowCSV(true)} className="px-3 py-2 text-sm border border-gray-200 rounded-xl text-gray-600 hover:bg-gray-50 hidden sm:flex items-center gap-1.5">
-              <FileText size={15}/>CSV
+            <button onClick={()=>setShowCSV(true)} className="p-2 rounded-xl border border-gray-200 text-gray-500 hover:bg-gray-50 hidden sm:flex">
+              <FileText size={16}/>
             </button>
-            {/* 手動輸入按鈕 — 明確顯示 */}
-            <button onClick={()=>setShowManual(true)} className="px-3 py-2 text-sm border border-violet-200 text-violet-600 rounded-xl hover:bg-violet-50 hidden sm:flex items-center gap-1.5">
-              <PenLine size={15}/>手動新增
+            <button onClick={()=>setShowManual(true)} className="p-2 rounded-xl border border-violet-200 text-violet-500 hover:bg-violet-50 hidden sm:flex">
+              <PenLine size={16}/>
             </button>
             <button onClick={()=>setShowScan(true)} className="px-3 py-2 text-sm bg-gray-900 text-white rounded-xl hover:bg-gray-800 flex items-center gap-1.5 font-medium">
-              <Camera size={15}/>掃描
+              <Camera size={15}/><span className="hidden xs:inline">掃描</span>
             </button>
 
             <div className="relative group">
