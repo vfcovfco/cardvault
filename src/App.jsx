@@ -278,6 +278,7 @@ function ScanModal({ onClose, onSave }) {
       const base64 = compressed.split(",")[1];
 
       const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+      console.log("API KEY:", apiKey ? `存在，長度${apiKey.length}` : "❌ 未定義");
       const r = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
         {
