@@ -14,12 +14,10 @@ export default async function handler(req, res) {
     }
 
     const apiKey = process.env.GEMINI_API_KEY;
-
     if (!apiKey) {
       return res.status(500).json({ error: "GEMINI_API_KEY not configured" });
     }
 
-    // gemini-2.5-flash：目前最新穩定版，支援圖片輸入，有免費額度
     const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
 
     const response = await fetch(url, {
@@ -36,18 +34,16 @@ export default async function handler(req, res) {
                 },
               },
               {
-                text: `你是名片資料擷取助理。請從這張名片圖片中擷取所有資訊。
-僅回傳 JSON，不要有任何說明文字或 markdown 格式。
-格式如下：
-{"nameZh":"","nameEn":"","title":"","company":"","email":"","phone":"","address":"","website":""}
-如果某欄位找不到，回傳空字串。`,
+                text: `從這張名片擷取資訊，只回傳以下 JSON，不要有任何其他文字、標點或 markdown：
+{"nameZh":"","nameEn":"","title":"","company":"","email":"","phone":"","address":"","website":""}`,
               },
             ],
           },
         ],
         generationConfig: {
-          temperature: 0.1,
-          maxOutputTokens: 1000,
+          temperature: 0,
+          maxOutputTokens: 512,
+          responseMimeType: "application/json",
         },
       }),
     });
@@ -59,13 +55,31 @@ export default async function handler(req, res) {
       return res.status(500).json({ error: data.error.message || "Gemini API 錯誤" });
     }
 
-    const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
-    const clean = text.replace(/```json|```/g, "").trim();
-    const parsed = JSON.parse(clean);
+    const raw = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+
+    // 強健的 JSON 解析：用正則抓出第一個完整的 {} 物件
+    let parsed = {};
+    try {
+      // 先嘗試直接解析
+      parsed = JSON.parse(raw.trim());
+    } catch {
+      // 失敗的話，用正則抓出 JSON 物件部分
+      const match = raw.match(/\{[\s\S]*\}/);
+      if (match) {
+        try {
+          parsed = JSON.parse(match[0]);
+        } catch (e2) {
+          console.error("JSON parse fallback failed:", e2.message, "raw:", raw.slice(0, 200));
+          // 還是失敗的話回傳空欄位，讓使用者手動填寫
+          parsed = { nameZh: "", nameEn: "", title: "", company: "", email: "", phone: "", address: "", website: "" };
+        }
+      }
+    }
 
     return res.status(200).json({ success: true, data: parsed });
+
   } catch (err) {
     console.error("Scan API error:", err.message);
-    return res.status(500).json({ error: "辨識失敗，請重試" });
+    return res.status(500).json({ error: err.message || "辨識失敗，請重試" });
   }
 }
