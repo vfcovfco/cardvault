@@ -309,7 +309,7 @@ function ScanModal({ onClose, onSave }) {
       setExtracted({ ...parsed, tags: [], note: "" });
 
     } catch (e) {
-      console.error("Gemini error:", e.message);
+  console.error("Gemini error FULL:", e);
       setError("辨識失敗，請重試或手動填寫");
       setExtracted({ nameZh: "", nameEn: "", title: "", company: "", email: "", phone: "", address: "", website: "", tags: [], note: "" });
     }
