@@ -292,7 +292,7 @@ function ScanModal({ onClose, onSave }) {
 {"nameZh":"","nameEn":"","title":"","company":"","email":"","phone":"","address":"","website":""}` }
               ]
             }],
-            generationConfig: { temperature: 0, maxOutputTokens: 512 }
+            generationConfig: { temperature: 0, maxOutputTokens: 1024 }
           })
         }
       );
