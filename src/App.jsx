@@ -288,11 +288,10 @@ function ScanModal({ onClose, onSave }) {
             contents: [{
               parts: [
                 { inline_data: { mime_type: "image/jpeg", data: base64 } },
-                { text: `從這張名片擷取資訊，只回傳 JSON，不要有任何其他文字、說明或 markdown：
-{"nameZh":"","nameEn":"","title":"","company":"","email":"","phone":"","address":"","website":""}` }
+               { text: `Extract business card info. Return ONLY this JSON, no other text:\n{"nameZh":"","nameEn":"","title":"","company":"","email":"","phone":"","address":"","website":""}` }
               ]
             }],
-            generationConfig: { temperature: 0, maxOutputTokens: 1024 }
+            generationConfig: { temperature: 0, maxOutputTokens: 2048 }
           })
         }
       );
