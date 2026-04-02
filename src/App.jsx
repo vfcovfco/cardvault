@@ -404,35 +404,43 @@ function ScanModal({ onClose, onSave }) {
   };
 
   const extractData = async () => {
-    setLoading(true); 
-    setError(null);
+    setLoading(true); setError(null);
     try {
       const compressed = await compressImage(preview);
       const base64 = compressed.split(",")[1];
+      const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
 
-      // 改為呼叫 Vercel 後端 API
-      const r = await fetch("/api/scan", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          imageBase64: base64,
-          mediaType: "image/jpeg"
-        })
-      });
+      const r = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            contents: [{
+              parts: [
+                { inline_data: { mime_type: "image/jpeg", data: base64 } },
+                { text: "Extract business card info. Return ONLY this JSON, no other text:\n"
+                  + '{"nameZh":"","nameEn":"","title":"","company":"","email":"","phoneOffice":"","phoneMobile":"","address":"","website":"","socials":[]}\n'
+                  + "socials format: [{\"platform\":\"LINE\",\"account\":\"xxx\"}], only if found. "
+                  + "Address: prefer Chinese, include both if available. "
+                  + "Phone: phoneOffice=office/T line, phoneMobile=mobile/M/cell. Ignore fax." }
+              ]
+            }],
+            generationConfig: { temperature: 0, maxOutputTokens: 2048 }
+          })
+        }
+      );
 
-      const result = await r.json();
-      
-      if (!r.ok || !result.success) {
-        throw new Error(result.error || "辨識失敗");
-      }
+      const data = await r.json();
+      if (data.error) throw new Error(data.error.message);
 
-      // 直接使用後端解析好的 data
-      setFormData({ ...emptyContact(), ...result.data, tags: [] });
+      const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
+      const match = text.match(/\{[\s\S]*\}/);
+      const parsed = JSON.parse(match ? match[0] : "{}");
+      setFormData({ ...emptyContact(), ...parsed, tags: [] });
     } catch (e) {
-      console.error("Scan error:", e.message);
-      setError(e.message === "API key not valid"
-        ? "系統配置錯誤（API Key 無效），請檢查 Vercel 設定"
-        : "辨識失敗，請重試或手動填寫");
+      console.error("Scan error:", e);
+      setError("辨識失敗，請重試或手動填寫");
       setFormData({ ...emptyContact() });
     }
     setLoading(false);
