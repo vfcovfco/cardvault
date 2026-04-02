@@ -157,18 +157,86 @@ function SocialEditor({ socials = [], onChange }) {
   );
 }
 
-// ─── ContactForm (shared by ScanModal, EditModal, ManualModal) ────────────────
-function ContactForm({ data, onChange, showTags = true }) {
+// ─── TagSection ──────────────────────────────────────────────────────────────
+function TagSection({ tags, allContactTags, onChange }) {
   const [newTag, setNewTag] = useState("");
+  const [showConfirmClear, setShowConfirmClear] = useState(false);
 
-  const set = (k, v) => onChange({ ...data, [k]: v });
-
-  const addTag = () => {
-    if (!newTag.trim() || data.tags?.includes(newTag.trim())) return;
-    set("tags", [...(data.tags||[]), newTag.trim()]);
+  const addTag = (t) => {
+    const val = (t || newTag).trim();
+    if (!val || tags.includes(val)) return;
+    onChange([...tags, val]);
     setNewTag("");
   };
-  const removeTag = t => set("tags", (data.tags||[]).filter(x => x !== t));
+
+  const removeTag = (t) => {
+    if (tags.length === 1) {
+      setShowConfirmClear(true);
+      return;
+    }
+    onChange(tags.filter(x => x !== t));
+  };
+
+  const confirmRemoveAll = () => {
+    onChange([]);
+    setShowConfirmClear(false);
+  };
+
+  // Tags from other contacts not yet in current list
+  const suggestions = [...new Set(allContactTags)].filter(t => !tags.includes(t)).slice(0, 12);
+
+  return (
+    <div className="bg-gray-50 rounded-2xl p-4 space-y-3">
+      <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">標籤</p>
+
+      {/* Current tags */}
+      <div className="flex flex-wrap gap-1.5 min-h-[28px]">
+        {tags.map(t => <TagChip key={t} tag={t} onRemove={removeTag}/>)}
+        {tags.length === 0 && <span className="text-xs text-gray-300 italic">尚未新增標籤</span>}
+      </div>
+
+      {/* Confirm remove last tag */}
+      {showConfirmClear && (
+        <div className="bg-amber-50 border border-amber-200 rounded-xl px-3 py-2.5 text-sm">
+          <p className="text-amber-700 font-medium mb-2">移除最後一個標籤？</p>
+          <p className="text-amber-600 text-xs mb-3">此聯絡人將不再有任何標籤，側邊欄篩選將無法找到他。</p>
+          <div className="flex gap-2">
+            <button onClick={confirmRemoveAll} className="flex-1 py-1.5 bg-amber-500 text-white rounded-lg text-xs font-medium hover:bg-amber-600 transition-colors">確認移除</button>
+            <button onClick={()=>setShowConfirmClear(false)} className="flex-1 py-1.5 border border-gray-200 text-gray-600 rounded-lg text-xs hover:bg-gray-50 transition-colors">取消</button>
+          </div>
+        </div>
+      )}
+
+      {/* Input */}
+      <div className="flex gap-2">
+        <input value={newTag} onChange={e=>setNewTag(e.target.value)}
+          onKeyDown={e=>e.key==="Enter"&&addTag()}
+          placeholder="輸入標籤後按 Enter"
+          className="flex-1 border border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-blue-400 bg-white"/>
+        <button onClick={()=>addTag()} className="px-3 py-2 bg-gray-200 rounded-xl hover:bg-gray-300 transition-colors"><Plus size={16}/></button>
+      </div>
+
+      {/* Suggestions from existing tags */}
+      {suggestions.length > 0 && (
+        <div>
+          <p className="text-xs text-gray-400 mb-1.5">常用標籤（點擊快速新增）</p>
+          <div className="flex flex-wrap gap-1.5">
+            {suggestions.map(t => (
+              <button key={t} onClick={()=>addTag(t)}
+                className={`text-xs px-2.5 py-1 rounded-full border border-dashed border-gray-300 text-gray-500 hover:border-blue-400 hover:text-blue-600 hover:bg-blue-50 transition-colors ${getTagColor(t)}`}>
+                + {t}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── ContactForm (shared by ScanModal, EditModal, ManualModal) ────────────────
+function ContactForm({ data, onChange, showTags = true, allContactTags = [] }) {
+  const set = (k, v) => onChange({ ...data, [k]: v });
 
   return (
     <div className="space-y-4">
@@ -239,18 +307,7 @@ function ContactForm({ data, onChange, showTags = true }) {
 
       {/* 標籤 */}
       {showTags && (
-        <div className="bg-gray-50 rounded-2xl p-4 space-y-3">
-          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">標籤</p>
-          <div className="flex flex-wrap gap-1 min-h-[24px]">
-            {data.tags?.map(t => <TagChip key={t} tag={t} onRemove={removeTag}/>)}
-          </div>
-          <div className="flex gap-2">
-            <input value={newTag} onChange={e=>setNewTag(e.target.value)} onKeyDown={e=>e.key==="Enter"&&addTag()}
-              placeholder="輸入標籤後按 Enter"
-              className="flex-1 border border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-blue-400 bg-white"/>
-            <button onClick={addTag} className="px-3 py-2 bg-gray-200 rounded-xl hover:bg-gray-300 transition-colors"><Plus size={16}/></button>
-          </div>
-        </div>
+        <TagSection tags={data.tags||[]} allTags={allContactTags} onChange={v=>set("tags",v)}/>
       )}
 
       {/* 備註 */}
@@ -387,7 +444,7 @@ function LoginScreen({ onEmailLogin, onGoogleLogin, loading, googleLoading }) {
 }
 
 // ─── ScanModal ────────────────────────────────────────────────────────────────
-function ScanModal({ onClose, onSave }) {
+function ScanModal({ onClose, onSave, allContactTags = [] }) {
   const [file, setFile]           = useState(null);
   const [preview, setPreview]     = useState(null);
   const [loading, setLoading]     = useState(false);
@@ -399,14 +456,18 @@ function ScanModal({ onClose, onSave }) {
   const handleFile = (f) => {
     setFile(f);
     const reader = new FileReader();
-    reader.onload = e => setPreview(e.target.result);
+    reader.onload = e => {
+      setPreview(e.target.result);
+      // Auto-extract immediately after photo is loaded
+      setTimeout(() => extractDataFromDataUrl(e.target.result), 100);
+    };
     reader.readAsDataURL(f);
   };
 
-  const extractData = async () => {
+  const extractDataFromDataUrl = async (dataUrl) => {
     setLoading(true); setError(null);
     try {
-      const compressed = await compressImage(preview);
+      const compressed = await compressImage(dataUrl);
       const base64 = compressed.split(",")[1];
       const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
 
@@ -426,7 +487,7 @@ function ScanModal({ onClose, onSave }) {
                   + "Phone: phoneOffice=office/T line, phoneMobile=mobile/M/cell. Ignore fax." }
               ]
             }],
-            generationConfig: { temperature: 0, maxOutputTokens: 2048 }
+            generationConfig: { temperature: 0, maxOutputTokens: 300 }
           })
         }
       );
@@ -454,9 +515,11 @@ function ScanModal({ onClose, onSave }) {
   return (
     <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-end md:items-center justify-center p-0 md:p-4">
       <div className="bg-white w-full md:max-w-2xl md:rounded-2xl rounded-t-3xl max-h-[95vh] flex flex-col overflow-hidden shadow-2xl">
-        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
-          <div className="flex items-center gap-2"><ScanLine className="text-blue-500" size={20}/><span className="font-bold text-gray-900">掃描名片</span></div>
-          <button onClick={onClose} className="p-2 rounded-xl hover:bg-gray-100"><X size={18}/></button>
+        <div className="flex items-center gap-3 px-5 py-4 border-b border-gray-100">
+          <button onClick={onClose} className="p-2 rounded-xl hover:bg-gray-100 text-gray-500 flex-shrink-0">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/></svg>
+          </button>
+          <div className="flex items-center gap-2 flex-1"><ScanLine className="text-blue-500" size={20}/><span className="font-bold text-gray-900">掃描名片</span></div>
         </div>
         <div className="flex-1 overflow-y-auto p-5 space-y-4">
           {!preview ? (
@@ -486,16 +549,21 @@ function ScanModal({ onClose, onSave }) {
                 <img src={preview} alt="" className="w-full rounded-xl object-contain max-h-52 bg-gray-50"/>
                 <button onClick={()=>{setPreview(null);setFile(null);setFormData(null);setError(null);}} className="absolute top-2 right-2 bg-black/60 text-white rounded-full p-1 hover:bg-black/80"><X size={14}/></button>
               </div>
-              {!formData && (
-                <button onClick={extractData} disabled={loading} className="w-full py-3 bg-blue-500 text-white rounded-xl font-semibold flex items-center justify-center gap-2 hover:bg-blue-600 disabled:opacity-60 transition-colors">
-                  {loading ? <><Loader2 size={18} className="animate-spin"/>AI 辨識中...</> : <><ScanLine size={18}/>開始辨識</>}
+              {loading && (
+                <div className="w-full py-3 bg-blue-500 text-white rounded-xl font-semibold flex items-center justify-center gap-2">
+                  <Loader2 size={18} className="animate-spin"/>AI 辨識中...
+                </div>
+              )}
+              {!formData && !loading && error && (
+                <button onClick={()=>extractDataFromDataUrl(preview)} className="w-full py-3 bg-blue-500 text-white rounded-xl font-semibold flex items-center justify-center gap-2 hover:bg-blue-600 transition-colors">
+                  <ScanLine size={18}/>重新辨識
                 </button>
               )}
               {error && <div className="bg-red-50 text-red-600 text-sm rounded-xl px-4 py-3">{error}</div>}
               {formData && (
                 <div>
                   <div className="flex items-center gap-2 text-sm font-semibold text-gray-700 mb-3"><Check size={16} className="text-green-500"/>辨識完成，請確認後儲存</div>
-                  <ContactForm data={formData} onChange={setFormData} showTags={true}/>
+                  <ContactForm data={formData} onChange={setFormData} showTags={true} allContactTags={allContactTags}/>
                 </div>
               )}
             </div>
@@ -512,7 +580,7 @@ function ScanModal({ onClose, onSave }) {
 }
 
 // ─── ManualModal (手工輸入) ────────────────────────────────────────────────────
-function ManualModal({ onClose, onSave }) {
+function ManualModal({ onClose, onSave, allContactTags = [] }) {
   const [formData, setFormData] = useState(emptyContact());
 
   const handleSave = () => {
@@ -524,12 +592,14 @@ function ManualModal({ onClose, onSave }) {
   return (
     <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-end md:items-center justify-center p-0 md:p-4">
       <div className="bg-white w-full md:max-w-2xl md:rounded-2xl rounded-t-3xl max-h-[95vh] flex flex-col overflow-hidden shadow-2xl">
-        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
-          <div className="flex items-center gap-2"><PenLine className="text-violet-500" size={20}/><span className="font-bold text-gray-900">手動新增聯絡人</span></div>
-          <button onClick={onClose} className="p-2 rounded-xl hover:bg-gray-100"><X size={18}/></button>
+        <div className="flex items-center gap-3 px-5 py-4 border-b border-gray-100">
+          <button onClick={onClose} className="p-2 rounded-xl hover:bg-gray-100 text-gray-500 flex-shrink-0">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/></svg>
+          </button>
+          <div className="flex items-center gap-2 flex-1"><PenLine className="text-violet-500" size={20}/><span className="font-bold text-gray-900">手動新增聯絡人</span></div>
         </div>
         <div className="flex-1 overflow-y-auto p-5">
-          <ContactForm data={formData} onChange={setFormData} showTags={true}/>
+          <ContactForm data={formData} onChange={setFormData} showTags={true} allContactTags={allContactTags}/>
         </div>
         <div className="px-5 pb-5 pt-3 border-t border-gray-100">
           <button onClick={handleSave}
@@ -544,7 +614,7 @@ function ManualModal({ onClose, onSave }) {
 }
 
 // ─── EditModal ────────────────────────────────────────────────────────────────
-function EditModal({ contact, onClose, onSave }) {
+function EditModal({ contact, onClose, onSave, allContactTags = [] }) {
   const [formData, setFormData] = useState({ ...emptyContact(), ...contact });
 
   const exportVCard = () => {
@@ -564,7 +634,7 @@ function EditModal({ contact, onClose, onSave }) {
           <button onClick={onClose} className="p-2 rounded-xl hover:bg-gray-100"><X size={18}/></button>
         </div>
         <div className="flex-1 overflow-y-auto p-5">
-          <ContactForm data={formData} onChange={setFormData} showTags={true}/>
+          <ContactForm data={formData} onChange={setFormData} showTags={true} allContactTags={allContactTags}/>
         </div>
         <div className="px-5 pb-5 pt-3 border-t border-gray-100 space-y-2">
           <button onClick={exportVCard} className="w-full py-2.5 border border-gray-200 text-gray-600 rounded-xl font-medium text-sm flex items-center justify-center gap-2 hover:bg-gray-50 transition-colors">
@@ -927,10 +997,10 @@ export default function App() {
       {/* Toast */}
       {toast&&<div className="fixed top-20 right-4 bg-gray-900 text-white text-sm px-4 py-3 rounded-xl shadow-lg z-50">{toast}</div>}
 
-      {showScan   && <ScanModal   onClose={()=>setShowScan(false)}   onSave={handleScanSave}/>}
-      {showManual && <ManualModal onClose={()=>setShowManual(false)} onSave={handleManualSave}/>}
+      {showScan   && <ScanModal   onClose={()=>setShowScan(false)}   onSave={handleScanSave}   allContactTags={allTags}/>}
+      {showManual && <ManualModal onClose={()=>setShowManual(false)} onSave={handleManualSave} allContactTags={allTags}/>}
       {showCSV    && <CSVImportModal onClose={()=>setShowCSV(false)} onImport={handleCSVImport}/>}
-      {editingContact && <EditModal contact={editingContact} onClose={()=>setEditingContact(null)} onSave={handleEditSave}/>}
+      {editingContact && <EditModal contact={editingContact} onClose={()=>setEditingContact(null)} onSave={handleEditSave} allContactTags={allTags}/>}
     </div>
   );
 }
