@@ -426,7 +426,7 @@ function ScanModal({ onClose, onSave }) {
                   + "Phone: phoneOffice=office/T line, phoneMobile=mobile/M/cell. Ignore fax." }
               ]
             }],
-            generationConfig: { temperature: 0, maxOutputTokens: 2048 }
+            generationConfig: { temperature: 0, maxOutputTokens: 300 }
           })
         }
       );
