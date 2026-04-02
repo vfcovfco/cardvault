@@ -13,64 +13,64 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "Missing imageBase64" });
     }
 
-    const apiKey = process.env.GEMINI_API_KEY;
+    const apiKey = process.env.ANTHROPIC_API_KEY;
     if (!apiKey) {
-      return res.status(500).json({ error: "GEMINI_API_KEY not configured" });
+      return res.status(500).json({ error: "ANTHROPIC_API_KEY not configured" });
     }
 
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${apiKey}`;
-
-    const response = await fetch(url, {
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+      },
       body: JSON.stringify({
-        contents: [
+        model: "claude-haiku-4-5-20251001",
+        max_tokens: 1024,
+        system: `你是名片資料擷取助理。請從名片圖片中擷取所有資訊，僅回傳 JSON，不要有任何說明文字或 markdown。
+格式：{"nameZh":"","nameEn":"","title":"","company":"","email":"","phone":"","address":"","website":""}
+如果某欄位找不到，回傳空字串。`,
+        messages: [
           {
-            parts: [
+            role: "user",
+            content: [
               {
-                inlineData: {
-                  mimeType: mediaType || "image/jpeg",
+                type: "image",
+                source: {
+                  type: "base64",
+                  media_type: mediaType || "image/jpeg",
                   data: imageBase64,
                 },
               },
               {
-                text: `從這張名片擷取資訊，只回傳以下 JSON，不要有任何其他文字、標點或 markdown：
-{"nameZh":"","nameEn":"","title":"","company":"","email":"","phone":"","address":"","website":""}`,
+                type: "text",
+                text: "請擷取這張名片的所有資訊",
               },
             ],
           },
         ],
-        generationConfig: {
-          temperature: 0,
-          maxOutputTokens: 512,
-          responseMimeType: "application/json",
-        },
       }),
     });
 
     const data = await response.json();
 
     if (data.error) {
-      console.error("Gemini error:", JSON.stringify(data.error));
-      return res.status(500).json({ error: data.error.message || "Gemini API 錯誤" });
+      console.error("Anthropic error:", JSON.stringify(data.error));
+      return res.status(500).json({ error: data.error.message || "API 錯誤" });
     }
 
-    const raw = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    const raw = data.content?.find(b => b.type === "text")?.text || "{}";
 
-    // 強健的 JSON 解析：用正則抓出第一個完整的 {} 物件
     let parsed = {};
     try {
-      // 先嘗試直接解析
       parsed = JSON.parse(raw.trim());
     } catch {
-      // 失敗的話，用正則抓出 JSON 物件部分
       const match = raw.match(/\{[\s\S]*\}/);
       if (match) {
         try {
           parsed = JSON.parse(match[0]);
-        } catch (e2) {
-          console.error("JSON parse fallback failed:", e2.message, "raw:", raw.slice(0, 200));
-          // 還是失敗的話回傳空欄位，讓使用者手動填寫
+        } catch {
           parsed = { nameZh: "", nameEn: "", title: "", company: "", email: "", phone: "", address: "", website: "" };
         }
       }
