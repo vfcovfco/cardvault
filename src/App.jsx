@@ -956,10 +956,10 @@ export default function App() {
     showToast("📄 CSV 範本已下載");
   };
 
-  // ③ Excel 匯出（全部或選取）
+  // ④ Excel 匯出（全部或選取）
   const exportExcel = (targetContacts) => {
     const list = targetContacts || (selectedIds.length > 0 ? contacts.filter(c=>selectedIds.includes(c.id)) : contacts);
-    const header = ["姓名","英文姓名","公司","職稱","Email","公司電話","手機","地址","網站","社群帳號","標籤","備註","來源","建立時間"];
+    const cols = ["\u59d3\u540d","\u82f1\u6587\u59d3\u540d","\u516c\u53f8","\u8077\u7a31","Email","\u516c\u53f8\u96fb\u8a71","\u624b\u6a5f","\u5730\u5740","\u7db2\u7ad9","\u793e\u7fa4\u5e33\u865f","\u6a19\u7c64","\u5099\u8a3b","\u4f86\u6e90","\u5efa\u7acb\u6642\u9593"];
     const rows = list.map(c => [
       c.nameZh||"", c.nameEn||"", c.company||"", c.title||"",
       c.email||"", c.phoneOffice||"", c.phoneMobile||"",
@@ -968,14 +968,15 @@ export default function App() {
       (c.tags||[]).join(";"),
       c.note||"", c.source||"", c.createdAt ? c.createdAt.slice(0,10) : ""
     ]);
-    // Build CSV with BOM (Excel-compatible)
-    const escape = v => '"' + String(v).replace(/"/g, '""'  ) + '"';
-    const csvContent = "\uFEFF" + [header, ...rows].map(r => r.map(escape).join(",")).join("\n");
+    const DQ = String.fromCharCode(34);
+    const wrap = (v) => DQ + String(v).replace(new RegExp(DQ, "g"), DQ+DQ) + DQ;
+    const csvContent = "\uFEFF" + [cols, ...rows].map(r => r.map(wrap).join(",")).join("\n");
     const a = document.createElement("a");
     a.href = URL.createObjectURL(new Blob([csvContent], { type: "text/csv;charset=utf-8;" }));
     a.download = "CardVault_" + new Date().toISOString().slice(0,10) + ".csv";
     a.click();
-    showToast("已匯出 " + list.length + " 筆");
+    showToast("\u5DF2\u532F\u51FA " + list.length + " \u7B46");
+  };
 
   // Batch save from ScanModal
   const handleSaveMultiple = async (contactList) => {
