@@ -444,10 +444,25 @@ function LoginScreen({ onEmailLogin, onGoogleLogin, loading, googleLoading }) {
 }
 
 // ─── Gemini extract helper ───────────────────────────────────────────────────
-async function geminiExtract(dataUrl) {
+// mode: "single" = one card, "multi" = multiple cards in one photo
+async function geminiExtract(dataUrl, mode) {
   const compressed = await compressImage(dataUrl);
   const base64 = compressed.split(",")[1];
   const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+
+  const singlePrompt = "Extract business card info. Return ONLY this JSON, no other text:\n"
+    + '{"nameZh":"","nameEn":"","title":"","company":"","email":"","phoneOffice":"","phoneMobile":"","address":"","website":"","socials":[]}\n'
+    + 'socials format: [{"platform":"LINE","account":"xxx"}], only if found. '
+    + "Address: prefer Chinese, include both if available. "
+    + "Phone: phoneOffice=office/T line, phoneMobile=mobile/M/cell. Ignore fax.";
+
+  const multiPrompt = "This photo may contain multiple business cards. Extract ALL of them."
+    + " Return ONLY a JSON array, no other text:\n"
+    + '[{"nameZh":"","nameEn":"","title":"","company":"","email":"","phoneOffice":"","phoneMobile":"","address":"","website":"","socials":[]}]\n'
+    + "Each element = one business card. "
+    + 'socials format: [{"platform":"LINE","account":"xxx"}], only if found. '
+    + "Address: prefer Chinese. Phone: phoneOffice=T/office, phoneMobile=M/cell. Ignore fax.";
+
   const r = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
     {
@@ -456,21 +471,25 @@ async function geminiExtract(dataUrl) {
       body: JSON.stringify({
         contents: [{ parts: [
           { inline_data: { mime_type: "image/jpeg", data: base64 } },
-          { text: "Extract business card info. Return ONLY this JSON, no other text:\n"
-            + '{"nameZh":"","nameEn":"","title":"","company":"","email":"","phoneOffice":"","phoneMobile":"","address":"","website":"","socials":[]}\n'
-            + 'socials format: [{"platform":"LINE","account":"xxx"}], only if found. '
-            + "Address: prefer Chinese, include both if available. "
-            + "Phone: phoneOffice=office/T line, phoneMobile=mobile/M/cell. Ignore fax." }
+          { text: mode === "multi" ? multiPrompt : singlePrompt }
         ]}],
-        generationConfig: { temperature: 0, maxOutputTokens: 300 }
+        generationConfig: { temperature: 0, maxOutputTokens: mode === "multi" ? 1500 : 300 }
       })
     }
   );
   const data = await r.json();
   if (data.error) throw new Error(data.error.message);
-  const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
-  const match = text.match(/\{[\s\S]*\}/);
-  return JSON.parse(match ? match[0] : "{}");
+  const text = data.candidates?.[0]?.content?.parts?.[0]?.text || (mode === "multi" ? "[]" : "{}");
+
+  if (mode === "multi") {
+    // Parse array
+    const arrMatch = text.match(/\[[\s\S]*\]/);
+    const arr = JSON.parse(arrMatch ? arrMatch[0] : "[]");
+    return Array.isArray(arr) ? arr : [arr];
+  } else {
+    const match = text.match(/\{[\s\S]*\}/);
+    return JSON.parse(match ? match[0] : "{}");
+  }
 }
 
 // ─── ScanModal (single + batch) ───────────────────────────────────────────────
@@ -486,6 +505,7 @@ function ScanModal({ onClose, onSave, onSaveMultiple, allContactTags = [] }) {
   const fileRef   = useRef();
   const cameraRef = useRef();
   const batchRef  = useRef();
+  const multiRef  = useRef(); // one photo, multiple cards
 
   const handleSingleFile = (f) => {
     setMode("single");
@@ -515,33 +535,122 @@ function ScanModal({ onClose, onSave, onSaveMultiple, allContactTags = [] }) {
     const arr = Array.from(files);
     if (arr.length === 0) return;
     if (arr.length === 1) { handleSingleFile(arr[0]); return; }
+
+    // Pre-load ALL previews first, then set state once everything is ready
     const items = arr.map(f => ({ file: f, preview: null, status: "pending", result: null, error: null }));
-    setBatchItems(items);
     setMode("batch-review");
+
+    // Load all files in parallel, then set state with all previews ready
+    const loaders = arr.map((f, i) => new Promise(resolve => {
+      const reader = new FileReader();
+      reader.onload = e => { items[i].preview = e.target.result; resolve(); };
+      reader.readAsDataURL(f);
+    }));
+
+    // Set items immediately for UI (show loading thumbnails)
+    setBatchItems([...items]);
+
+    // Update as each preview loads
     arr.forEach((f, i) => {
       const reader = new FileReader();
-      reader.onload = e => setBatchItems(prev => { const n=[...prev]; n[i]={...n[i],preview:e.target.result}; return n; });
+      reader.onload = e => {
+        items[i].preview = e.target.result;
+        setBatchItems(prev => {
+          const n = [...prev];
+          n[i] = { ...n[i], preview: e.target.result };
+          return n;
+        });
+      };
       reader.readAsDataURL(f);
     });
   };
 
   const startBatchExtract = async () => {
     setBatchLoading(true);
-    for (let i = 0; i < batchItems.length; i++) {
-      setBatchItems(prev => { const n=[...prev]; n[i]={...n[i],status:"loading"}; return n; });
-      try {
-        const parsed = await geminiExtract(batchItems[i].preview);
-        setBatchItems(prev => { const n=[...prev]; n[i]={...n[i],status:"done",result:{...emptyContact(),...parsed,tags:[]}}; return n; });
-      } catch(e) {
-        setBatchItems(prev => { const n=[...prev]; n[i]={...n[i],status:"error",result:{...emptyContact()}}; return n; });
+    const count = batchItems.length;
+
+    for (let i = 0; i < count; i++) {
+      // Get latest preview via functional state read
+      let dataUrl = null;
+      await new Promise(resolve => {
+        setBatchItems(prev => {
+          dataUrl = prev[i]?.preview || null;
+          const n = [...prev];
+          n[i] = { ...n[i], status: "loading" };
+          resolve();
+          return n;
+        });
+      });
+
+      // Wait for preview if still loading (up to 5s)
+      for (let wait = 0; wait < 50 && !dataUrl; wait++) {
+        await new Promise(r => setTimeout(r, 100));
+        await new Promise(resolve => {
+          setBatchItems(prev => { dataUrl = prev[i]?.preview || null; resolve(); return prev; });
+        });
       }
-      if (i < batchItems.length - 1) await new Promise(r => setTimeout(r, 500));
+
+      try {
+        if (!dataUrl) throw new Error("圖片載入失敗");
+        const parsed = await geminiExtract(dataUrl, "single");
+        setBatchItems(prev => {
+          const n = [...prev];
+          n[i] = { ...n[i], status: "done", result: { ...emptyContact(), ...parsed, tags: [] } };
+          return n;
+        });
+      } catch(e) {
+        console.error("Batch item", i, "error:", e.message);
+        setBatchItems(prev => {
+          const n = [...prev];
+          n[i] = { ...n[i], status: "error", result: { ...emptyContact() } };
+          return n;
+        });
+      }
+      if (i < count - 1) await new Promise(r => setTimeout(r, 600));
     }
     setBatchLoading(false);
     setReviewIdx(0);
   };
 
   const updateBatchResult = (idx, data) => setBatchItems(prev => { const n=[...prev]; n[idx]={...n[idx],result:data}; return n; });
+
+  // Handle one photo containing multiple cards
+  const handleMultiCardFile = (f) => {
+    setMode("single");
+    setLoading(true);
+    const reader = new FileReader();
+    reader.onload = async e => {
+      setPreview(e.target.result);
+      setError(null);
+      setFormData(null);
+      try {
+        const cards = await geminiExtract(e.target.result, "multi");
+        if (!cards || cards.length === 0) {
+          setError("未偵測到名片，請重試");
+          setFormData({ ...emptyContact() });
+        } else if (cards.length === 1) {
+          setFormData({ ...emptyContact(), ...cards[0], tags: [] });
+        } else {
+          // Multiple cards found - switch to batch review mode
+          const items = cards.map((card, i) => ({
+            file: null, preview: e.target.result,
+            status: "done",
+            result: { ...emptyContact(), ...card, tags: [] },
+            error: null,
+            label: "第" + (i+1) + "張（同一照片）"
+          }));
+          setBatchItems(items);
+          setMode("batch-review");
+          setReviewIdx(0);
+        }
+      } catch(err) {
+        setError("辨識失敗，請重試");
+        setFormData({ ...emptyContact() });
+      }
+      setLoading(false);
+    };
+    reader.readAsDataURL(f);
+  };
 
   const saveAllBatch = () => {
     const contacts = batchItems.filter(it=>it.result).map(it => ({
@@ -590,13 +699,19 @@ function ScanModal({ onClose, onSave, onSaveMultiple, allContactTags = [] }) {
                 <div className="text-left"><p className="font-medium text-gray-700">從相簿選取（單張）</p><p className="text-xs text-gray-400">選擇已拍好的名片照片</p></div>
               </button>
               <button onClick={()=>batchRef.current.click()}
-                className="w-full py-5 border-2 border-blue-100 text-blue-600 rounded-2xl flex items-center justify-center gap-3 hover:border-blue-300 hover:bg-blue-50 transition-colors">
+                className="w-full py-4 border-2 border-blue-100 text-blue-600 rounded-2xl flex items-center justify-center gap-3 hover:border-blue-300 hover:bg-blue-50 transition-colors">
                 <Grid3x3 size={20} className="text-blue-400"/>
-                <div className="text-left"><p className="font-medium">批次掃描（多張）</p><p className="text-xs text-blue-400">一次選多張，AI 依序辨識</p></div>
+                <div className="text-left"><p className="font-medium">批次掃描（多張照片）</p><p className="text-xs text-blue-400">一次選多張照片，AI 依序辨識每張</p></div>
+              </button>
+              <button onClick={()=>multiRef.current.click()}
+                className="w-full py-4 border-2 border-violet-100 text-violet-600 rounded-2xl flex items-center justify-center gap-3 hover:border-violet-300 hover:bg-violet-50 transition-colors">
+                <ScanLine size={20} className="text-violet-400"/>
+                <div className="text-left"><p className="font-medium">一張照片含多張名片</p><p className="text-xs text-violet-400">拍一張含多張名片的照片，AI 一次辨識全部</p></div>
               </button>
               <input ref={cameraRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={e=>e.target.files[0]&&handleSingleFile(e.target.files[0])}/>
               <input ref={fileRef}   type="file" accept="image/*"                        className="hidden" onChange={e=>e.target.files[0]&&handleSingleFile(e.target.files[0])}/>
               <input ref={batchRef}  type="file" accept="image/*" multiple               className="hidden" onChange={e=>e.target.files.length>0&&handleBatchFiles(e.target.files)}/>
+              <input ref={multiRef}  type="file" accept="image/*"                        className="hidden" onChange={e=>e.target.files[0]&&handleMultiCardFile(e.target.files[0])}/>
             </div>
           )}
 
