@@ -951,7 +951,7 @@ export default function App() {
     const csv = "\uFEFF" + header + "\n" + example; // BOM for Excel UTF-8
     const a = document.createElement("a");
     a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8;" }));
-    a.download = "CardVault_匯入範本.csv";
+    a.download = "CardVault_template.csv";
     a.click();
     showToast("📄 CSV 範本已下載");
   };
@@ -969,13 +969,13 @@ export default function App() {
       c.note||"", c.source||"", c.createdAt ? c.createdAt.slice(0,10) : ""
     ]);
     // Build CSV with BOM (Excel-compatible)
-    const csvContent = "\uFEFF" + [header, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g,"\"\"')}"`).join(",")).join("\n");
+    const escape = v => '"' + String(v).replace(/"/g, '""'  ) + '"';
+    const csvContent = "\uFEFF" + [header, ...rows].map(r => r.map(escape).join(",")).join("\n");
     const a = document.createElement("a");
     a.href = URL.createObjectURL(new Blob([csvContent], { type: "text/csv;charset=utf-8;" }));
-    a.download = `CardVault_聯絡人_${new Date().toISOString().slice(0,10)}.csv`;
+    a.download = "CardVault_" + new Date().toISOString().slice(0,10) + ".csv";
     a.click();
-    showToast(`📊 已匯出 ${list.length} 筆 Excel`);
-  };
+    showToast("已匯出 " + list.length + " 筆");
 
   // Batch save from ScanModal
   const handleSaveMultiple = async (contactList) => {
