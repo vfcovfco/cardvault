@@ -443,124 +443,178 @@ function LoginScreen({ onEmailLogin, onGoogleLogin, loading, googleLoading }) {
   );
 }
 
-// ─── ScanModal ────────────────────────────────────────────────────────────────
-function ScanModal({ onClose, onSave, allContactTags = [] }) {
-  const [file, setFile]           = useState(null);
-  const [preview, setPreview]     = useState(null);
-  const [loading, setLoading]     = useState(false);
-  const [formData, setFormData]   = useState(null);
-  const [error, setError]         = useState(null);
+// ─── Gemini extract helper ───────────────────────────────────────────────────
+async function geminiExtract(dataUrl) {
+  const compressed = await compressImage(dataUrl);
+  const base64 = compressed.split(",")[1];
+  const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+  const r = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ parts: [
+          { inline_data: { mime_type: "image/jpeg", data: base64 } },
+          { text: "Extract business card info. Return ONLY this JSON, no other text:\n"
+            + '{"nameZh":"","nameEn":"","title":"","company":"","email":"","phoneOffice":"","phoneMobile":"","address":"","website":"","socials":[]}\n'
+            + 'socials format: [{"platform":"LINE","account":"xxx"}], only if found. '
+            + "Address: prefer Chinese, include both if available. "
+            + "Phone: phoneOffice=office/T line, phoneMobile=mobile/M/cell. Ignore fax." }
+        ]}],
+        generationConfig: { temperature: 0, maxOutputTokens: 300 }
+      })
+    }
+  );
+  const data = await r.json();
+  if (data.error) throw new Error(data.error.message);
+  const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
+  const match = text.match(/\{[\s\S]*\}/);
+  return JSON.parse(match ? match[0] : "{}");
+}
+
+// ─── ScanModal (single + batch) ───────────────────────────────────────────────
+function ScanModal({ onClose, onSave, onSaveMultiple, allContactTags = [] }) {
+  const [mode, setMode]             = useState("choose"); // choose | single | batch-review
+  const [preview, setPreview]       = useState(null);
+  const [loading, setLoading]       = useState(false);
+  const [formData, setFormData]     = useState(null);
+  const [error, setError]           = useState(null);
+  const [batchItems, setBatchItems] = useState([]);
+  const [batchLoading, setBatchLoading] = useState(false);
+  const [reviewIdx, setReviewIdx]   = useState(0);
   const fileRef   = useRef();
   const cameraRef = useRef();
+  const batchRef  = useRef();
 
-  const handleFile = (f) => {
-    setFile(f);
+  const handleSingleFile = (f) => {
+    setMode("single");
     const reader = new FileReader();
-    reader.onload = e => {
-      setPreview(e.target.result);
-      // Auto-extract immediately after photo is loaded
-      setTimeout(() => extractDataFromDataUrl(e.target.result), 100);
-    };
+    reader.onload = e => { setPreview(e.target.result); extractSingle(e.target.result); };
     reader.readAsDataURL(f);
   };
 
-  const extractDataFromDataUrl = async (dataUrl) => {
-    setLoading(true); setError(null);
+  const extractSingle = async (dataUrl) => {
+    setLoading(true); setError(null); setFormData(null);
     try {
-      const compressed = await compressImage(dataUrl);
-      const base64 = compressed.split(",")[1];
-      const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
-
-      const r = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            contents: [{
-              parts: [
-                { inline_data: { mime_type: "image/jpeg", data: base64 } },
-                { text: "Extract business card info. Return ONLY this JSON, no other text:\n"
-                  + '{"nameZh":"","nameEn":"","title":"","company":"","email":"","phoneOffice":"","phoneMobile":"","address":"","website":"","socials":[]}\n'
-                  + "socials format: [{\"platform\":\"LINE\",\"account\":\"xxx\"}], only if found. "
-                  + "Address: prefer Chinese, include both if available. "
-                  + "Phone: phoneOffice=office/T line, phoneMobile=mobile/M/cell. Ignore fax." }
-              ]
-            }],
-            generationConfig: { temperature: 0, maxOutputTokens: 300 }
-          })
-        }
-      );
-
-      const data = await r.json();
-      if (data.error) throw new Error(data.error.message);
-
-      const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
-      const match = text.match(/\{[\s\S]*\}/);
-      const parsed = JSON.parse(match ? match[0] : "{}");
+      const parsed = await geminiExtract(dataUrl);
       setFormData({ ...emptyContact(), ...parsed, tags: [] });
-    } catch (e) {
-      console.error("Scan error:", e);
+    } catch(e) {
       setError("辨識失敗，請重試或手動填寫");
       setFormData({ ...emptyContact() });
     }
     setLoading(false);
   };
 
-  const handleSave = () => {
+  const handleSingleSave = () => {
     onSave({ ...formData, id: Date.now().toString(), createdAt: new Date().toISOString(), source: "scan" });
     onClose();
   };
 
+  const handleBatchFiles = (files) => {
+    const arr = Array.from(files);
+    if (arr.length === 0) return;
+    if (arr.length === 1) { handleSingleFile(arr[0]); return; }
+    const items = arr.map(f => ({ file: f, preview: null, status: "pending", result: null, error: null }));
+    setBatchItems(items);
+    setMode("batch-review");
+    arr.forEach((f, i) => {
+      const reader = new FileReader();
+      reader.onload = e => setBatchItems(prev => { const n=[...prev]; n[i]={...n[i],preview:e.target.result}; return n; });
+      reader.readAsDataURL(f);
+    });
+  };
+
+  const startBatchExtract = async () => {
+    setBatchLoading(true);
+    for (let i = 0; i < batchItems.length; i++) {
+      setBatchItems(prev => { const n=[...prev]; n[i]={...n[i],status:"loading"}; return n; });
+      try {
+        const parsed = await geminiExtract(batchItems[i].preview);
+        setBatchItems(prev => { const n=[...prev]; n[i]={...n[i],status:"done",result:{...emptyContact(),...parsed,tags:[]}}; return n; });
+      } catch(e) {
+        setBatchItems(prev => { const n=[...prev]; n[i]={...n[i],status:"error",result:{...emptyContact()}}; return n; });
+      }
+      if (i < batchItems.length - 1) await new Promise(r => setTimeout(r, 500));
+    }
+    setBatchLoading(false);
+    setReviewIdx(0);
+  };
+
+  const updateBatchResult = (idx, data) => setBatchItems(prev => { const n=[...prev]; n[idx]={...n[idx],result:data}; return n; });
+
+  const saveAllBatch = () => {
+    const contacts = batchItems.filter(it=>it.result).map(it => ({
+      ...it.result, id: Date.now().toString()+Math.random().toString(36).slice(2),
+      createdAt: new Date().toISOString(), source: "scan"
+    }));
+    onSaveMultiple(contacts);
+    onClose();
+  };
+
+  const allDone = batchItems.length > 0 && batchItems.every(it => it.status === "done" || it.status === "error");
+  const BackArrow = () => (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/></svg>
+  );
+
   return (
     <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-end md:items-center justify-center p-0 md:p-4">
       <div className="bg-white w-full md:max-w-2xl md:rounded-2xl rounded-t-3xl max-h-[95vh] flex flex-col overflow-hidden shadow-2xl">
-        <div className="flex items-center gap-3 px-5 py-4 border-b border-gray-100">
-          <button onClick={onClose} className="p-2 rounded-xl hover:bg-gray-100 text-gray-500 flex-shrink-0">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/></svg>
-          </button>
-          <div className="flex items-center gap-2 flex-1"><ScanLine className="text-blue-500" size={20}/><span className="font-bold text-gray-900">掃描名片</span></div>
+        {/* Header */}
+        <div className="flex items-center gap-3 px-5 py-4 border-b border-gray-100 flex-shrink-0">
+          <button onClick={mode==="choose" ? onClose : ()=>{setMode("choose");setPreview(null);setFormData(null);setBatchItems([]);}}
+            className="p-2 rounded-xl hover:bg-gray-100 text-gray-500 flex-shrink-0"><BackArrow/></button>
+          <div className="flex items-center gap-2 flex-1">
+            <ScanLine className="text-blue-500" size={20}/>
+            <span className="font-bold text-gray-900">
+              {mode==="choose"&&"掃描名片"}
+              {mode==="single"&&"單張掃描"}
+              {mode==="batch-review"&&`批次掃描（${batchItems.length} 張）`}
+            </span>
+          </div>
+          {mode==="batch-review"&&allDone&&<span className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded-full">辨識完成</span>}
         </div>
-        <div className="flex-1 overflow-y-auto p-5 space-y-4">
-          {!preview ? (
+
+        <div className="flex-1 overflow-y-auto p-5">
+          {/* Choose */}
+          {mode==="choose"&&(
             <div className="space-y-3">
               <button onClick={()=>cameraRef.current.click()}
                 className="w-full py-10 bg-gray-900 text-white rounded-2xl flex flex-col items-center gap-3 hover:bg-gray-800 transition-all active:scale-95">
                 <Camera size={48}/>
-                <div className="text-center">
-                  <p className="font-bold text-xl">拍照掃描</p>
-                  <p className="text-sm text-white/50 mt-1">點此開啟相機拍攝名片</p>
-                </div>
+                <div className="text-center"><p className="font-bold text-xl">拍照掃描</p><p className="text-sm text-white/50 mt-1">點此開啟相機拍攝名片</p></div>
               </button>
               <button onClick={()=>fileRef.current.click()}
                 className="w-full py-5 border-2 border-gray-200 text-gray-600 rounded-2xl flex items-center justify-center gap-3 hover:border-gray-300 hover:bg-gray-50 transition-colors">
                 <FileText size={20} className="text-gray-400"/>
-                <div className="text-left">
-                  <p className="font-medium text-gray-700">從相簿選取</p>
-                  <p className="text-xs text-gray-400">選擇已拍好的名片照片</p>
-                </div>
+                <div className="text-left"><p className="font-medium text-gray-700">從相簿選取（單張）</p><p className="text-xs text-gray-400">選擇已拍好的名片照片</p></div>
               </button>
-              <input ref={cameraRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={e=>e.target.files[0]&&handleFile(e.target.files[0])}/>
-              <input ref={fileRef}   type="file" accept="image/*" className="hidden"               onChange={e=>e.target.files[0]&&handleFile(e.target.files[0])}/>
+              <button onClick={()=>batchRef.current.click()}
+                className="w-full py-5 border-2 border-blue-100 text-blue-600 rounded-2xl flex items-center justify-center gap-3 hover:border-blue-300 hover:bg-blue-50 transition-colors">
+                <Grid3x3 size={20} className="text-blue-400"/>
+                <div className="text-left"><p className="font-medium">批次掃描（多張）</p><p className="text-xs text-blue-400">一次選多張，AI 依序辨識</p></div>
+              </button>
+              <input ref={cameraRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={e=>e.target.files[0]&&handleSingleFile(e.target.files[0])}/>
+              <input ref={fileRef}   type="file" accept="image/*"                        className="hidden" onChange={e=>e.target.files[0]&&handleSingleFile(e.target.files[0])}/>
+              <input ref={batchRef}  type="file" accept="image/*" multiple               className="hidden" onChange={e=>e.target.files.length>0&&handleBatchFiles(e.target.files)}/>
             </div>
-          ) : (
+          )}
+
+          {/* Single */}
+          {mode==="single"&&(
             <div className="space-y-4">
-              <div className="relative">
-                <img src={preview} alt="" className="w-full rounded-xl object-contain max-h-52 bg-gray-50"/>
-                <button onClick={()=>{setPreview(null);setFile(null);setFormData(null);setError(null);}} className="absolute top-2 right-2 bg-black/60 text-white rounded-full p-1 hover:bg-black/80"><X size={14}/></button>
-              </div>
-              {loading && (
-                <div className="w-full py-3 bg-blue-500 text-white rounded-xl font-semibold flex items-center justify-center gap-2">
-                  <Loader2 size={18} className="animate-spin"/>AI 辨識中...
+              {preview&&(
+                <div className="relative">
+                  <img src={preview} alt="" className="w-full rounded-xl object-contain max-h-52 bg-gray-50"/>
+                  <button onClick={()=>{setPreview(null);setFormData(null);setError(null);setMode("choose");}} className="absolute top-2 right-2 bg-black/60 text-white rounded-full p-1"><X size={14}/></button>
                 </div>
               )}
-              {!formData && !loading && error && (
-                <button onClick={()=>extractDataFromDataUrl(preview)} className="w-full py-3 bg-blue-500 text-white rounded-xl font-semibold flex items-center justify-center gap-2 hover:bg-blue-600 transition-colors">
-                  <ScanLine size={18}/>重新辨識
-                </button>
+              {loading&&<div className="w-full py-3 bg-blue-500 text-white rounded-xl font-semibold flex items-center justify-center gap-2"><Loader2 size={18} className="animate-spin"/>AI 辨識中...</div>}
+              {!formData&&!loading&&error&&(
+                <button onClick={()=>extractSingle(preview)} className="w-full py-3 bg-blue-500 text-white rounded-xl font-semibold flex items-center justify-center gap-2 hover:bg-blue-600"><ScanLine size={18}/>重新辨識</button>
               )}
-              {error && <div className="bg-red-50 text-red-600 text-sm rounded-xl px-4 py-3">{error}</div>}
-              {formData && (
+              {error&&<div className="bg-red-50 text-red-600 text-sm rounded-xl px-4 py-3">{error}</div>}
+              {formData&&(
                 <div>
                   <div className="flex items-center gap-2 text-sm font-semibold text-gray-700 mb-3"><Check size={16} className="text-green-500"/>辨識完成，請確認後儲存</div>
                   <ContactForm data={formData} onChange={setFormData} showTags={true} allContactTags={allContactTags}/>
@@ -568,17 +622,83 @@ function ScanModal({ onClose, onSave, allContactTags = [] }) {
               )}
             </div>
           )}
+
+          {/* Batch review */}
+          {mode==="batch-review"&&(
+            <div className="space-y-4">
+              {/* Thumbnail grid */}
+              <div className="grid grid-cols-4 gap-2">
+                {batchItems.map((it,i)=>(
+                  <button key={i} onClick={()=>setReviewIdx(i)}
+                    className={`relative aspect-square rounded-xl overflow-hidden border-2 transition-all ${reviewIdx===i?"border-blue-500 shadow-md":"border-transparent"}`}>
+                    {it.preview
+                      ? <img src={it.preview} alt="" className="w-full h-full object-cover"/>
+                      : <div className="w-full h-full bg-gray-100 flex items-center justify-center"><Loader2 size={14} className="text-gray-400 animate-spin"/></div>}
+                    <div className={`absolute top-1 right-1 w-5 h-5 rounded-full flex items-center justify-center text-xs font-bold
+                      ${it.status==="done"?"bg-green-500 text-white":it.status==="error"?"bg-red-500 text-white":it.status==="loading"?"bg-blue-500 text-white":"bg-gray-300 text-gray-600"}`}>
+                      {it.status==="done"?"✓":it.status==="error"?"!":it.status==="loading"?"…":i+1}
+                    </div>
+                  </button>
+                ))}
+              </div>
+
+              {batchItems.every(it=>it.status==="pending")&&!batchLoading&&(
+                <button onClick={startBatchExtract} className="w-full py-3 bg-blue-500 text-white rounded-xl font-semibold flex items-center justify-center gap-2 hover:bg-blue-600">
+                  <ScanLine size={18}/>開始批次辨識（{batchItems.length} 張）
+                </button>
+              )}
+              {batchLoading&&(
+                <div className="bg-blue-50 rounded-xl px-4 py-3 text-sm text-blue-700 flex items-center gap-2">
+                  <Loader2 size={16} className="animate-spin"/>辨識中... {batchItems.filter(it=>it.status==="done"||it.status==="error").length} / {batchItems.length}
+                </div>
+              )}
+
+              {/* Review card */}
+              {batchItems[reviewIdx]?.result&&(
+                <div className="border border-gray-100 rounded-2xl p-4">
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center gap-2 text-sm font-semibold text-gray-700"><Check size={16} className="text-green-500"/>第 {reviewIdx+1} 張</div>
+                    <div className="flex items-center gap-1">
+                      <button onClick={()=>setReviewIdx(i=>Math.max(0,i-1))} disabled={reviewIdx===0} className="p-1.5 rounded-lg hover:bg-gray-100 disabled:opacity-30 text-gray-500">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M15 18l-6-6 6-6"/></svg>
+                      </button>
+                      <span className="text-xs text-gray-400 px-1">{reviewIdx+1}/{batchItems.length}</span>
+                      <button onClick={()=>setReviewIdx(i=>Math.min(batchItems.length-1,i+1))} disabled={reviewIdx===batchItems.length-1} className="p-1.5 rounded-lg hover:bg-gray-100 disabled:opacity-30 text-gray-500">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M9 18l6-6-6-6"/></svg>
+                      </button>
+                    </div>
+                  </div>
+                  <ContactForm data={batchItems[reviewIdx].result} onChange={d=>updateBatchResult(reviewIdx,d)} showTags={true} allContactTags={allContactTags}/>
+                </div>
+              )}
+              {batchItems[reviewIdx]?.status==="loading"&&(
+                <div className="border border-gray-100 rounded-2xl p-8 flex flex-col items-center gap-2 text-gray-400">
+                  <Loader2 size={32} className="animate-spin text-blue-400"/>
+                  <p className="text-sm">第 {reviewIdx+1} 張辨識中...</p>
+                </div>
+              )}
+            </div>
+          )}
         </div>
-        {formData && (
-          <div className="px-5 pb-5 pt-3 border-t border-gray-100">
-            <button onClick={handleSave} className="w-full py-3 bg-gray-900 text-white rounded-xl font-semibold hover:bg-gray-800 transition-colors">儲存並同步</button>
+
+        {/* Footer */}
+        {mode==="single"&&formData&&(
+          <div className="px-5 pb-5 pt-3 border-t border-gray-100 flex-shrink-0">
+            <button onClick={handleSingleSave} className="w-full py-3 bg-gray-900 text-white rounded-xl font-semibold hover:bg-gray-800">儲存並同步</button>
+          </div>
+        )}
+        {mode==="batch-review"&&allDone&&(
+          <div className="px-5 pb-5 pt-3 border-t border-gray-100 flex-shrink-0 space-y-2">
+            <p className="text-xs text-gray-400 text-center">成功 {batchItems.filter(it=>it.status==="done").length} 張 · 失敗 {batchItems.filter(it=>it.status==="error").length} 張</p>
+            <button onClick={saveAllBatch} className="w-full py-3 bg-gray-900 text-white rounded-xl font-semibold hover:bg-gray-800">
+              全部儲存並同步（{batchItems.filter(it=>it.result).length} 筆）
+            </button>
           </div>
         )}
       </div>
     </div>
   );
 }
-
 // ─── ManualModal (手工輸入) ────────────────────────────────────────────────────
 function ManualModal({ onClose, onSave, allContactTags = [] }) {
   const [formData, setFormData] = useState(emptyContact());
@@ -648,7 +768,7 @@ function EditModal({ contact, onClose, onSave, allContactTags = [] }) {
 }
 
 // ─── CSVImportModal ───────────────────────────────────────────────────────────
-function CSVImportModal({ onClose, onImport }) {
+function CSVImportModal({ onClose, onImport, onDownloadTemplate }) {
   const [step, setStep] = useState(1);
   const [rows, setRows] = useState([]);
   const fileRef = useRef();
@@ -691,11 +811,16 @@ function CSVImportModal({ onClose, onImport }) {
         </div>
         <div className="flex-1 overflow-y-auto p-5">
           {step===1 ? (
-            <div onClick={()=>fileRef.current.click()} className="border-2 border-dashed border-amber-200 rounded-2xl p-12 text-center cursor-pointer hover:border-amber-400 hover:bg-amber-50/30 transition-colors">
-              <FileText className="mx-auto text-amber-300 mb-3" size={44}/>
-              <p className="font-medium text-gray-600 mb-1">點擊上傳 CSV 檔案</p>
-              <p className="text-sm text-gray-400">支援欄位：姓名 / 公司 / 職稱 / 電話 / Email / 標籤</p>
-              <input ref={fileRef} type="file" accept=".csv" className="hidden" onChange={e=>handleFile(e.target.files[0])}/>
+            <div className="space-y-3">
+              <div onClick={()=>fileRef.current.click()} className="border-2 border-dashed border-amber-200 rounded-2xl p-10 text-center cursor-pointer hover:border-amber-400 hover:bg-amber-50/30 transition-colors">
+                <FileText className="mx-auto text-amber-300 mb-3" size={44}/>
+                <p className="font-medium text-gray-600 mb-1">點擊上傳 CSV 檔案</p>
+                <p className="text-sm text-gray-400">支援欄位：姓名 / 公司 / 職稱 / 電話 / Email / 標籤</p>
+                <input ref={fileRef} type="file" accept=".csv" className="hidden" onChange={e=>handleFile(e.target.files[0])}/>
+              </div>
+              <button onClick={onDownloadTemplate} className="w-full py-3 border border-dashed border-gray-200 text-gray-500 rounded-xl text-sm flex items-center justify-center gap-2 hover:bg-gray-50 hover:border-gray-300 transition-colors">
+                <Download size={15}/>下載 CSV 範本（含欄位說明）
+              </button>
             </div>
           ) : (
             <div className="space-y-3">
@@ -819,6 +944,49 @@ export default function App() {
     showToast(`📥 已匯出 ${sel.length} 筆`);
   };
 
+  // ② CSV 範本下載
+  const downloadCSVTemplate = () => {
+    const header = "姓名,英文姓名,公司,職稱,Email,公司電話,手機,地址,網站,標籤,備註";
+    const example = "王小明,Michael Wang,台灣科技股份有限公司,業務經理,michael@example.com,(02)1234-5678,0912-345-678,台北市信義區信義路五段7號,www.example.com,VIP;潛在客戶,在展覽認識";
+    const csv = "\uFEFF" + header + "\n" + example; // BOM for Excel UTF-8
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8;" }));
+    a.download = "CardVault_匯入範本.csv";
+    a.click();
+    showToast("📄 CSV 範本已下載");
+  };
+
+  // ③ Excel 匯出（全部或選取）
+  const exportExcel = (targetContacts) => {
+    const list = targetContacts || (selectedIds.length > 0 ? contacts.filter(c=>selectedIds.includes(c.id)) : contacts);
+    const header = ["姓名","英文姓名","公司","職稱","Email","公司電話","手機","地址","網站","社群帳號","標籤","備註","來源","建立時間"];
+    const rows = list.map(c => [
+      c.nameZh||"", c.nameEn||"", c.company||"", c.title||"",
+      c.email||"", c.phoneOffice||"", c.phoneMobile||"",
+      c.address||"", c.website||"",
+      (c.socials||[]).map(s=>s.platform+":"+s.account).join(" / "),
+      (c.tags||[]).join(";"),
+      c.note||"", c.source||"", c.createdAt ? c.createdAt.slice(0,10) : ""
+    ]);
+    // Build CSV with BOM (Excel-compatible)
+    const csvContent = "\uFEFF" + [header, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g,"\"\"')}"`).join(",")).join("\n");
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([csvContent], { type: "text/csv;charset=utf-8;" }));
+    a.download = `CardVault_聯絡人_${new Date().toISOString().slice(0,10)}.csv`;
+    a.click();
+    showToast(`📊 已匯出 ${list.length} 筆 Excel`);
+  };
+
+  // Batch save from ScanModal
+  const handleSaveMultiple = async (contactList) => {
+    setSyncStatus("syncing");
+    try {
+      await Promise.all(contactList.map(c => saveContact(c)));
+      setSyncStatus("ok");
+      showToast(`✅ 已儲存 ${contactList.length} 張名片並同步`);
+    } catch(e) { setSyncStatus("error"); showToast("⚠️ 部分儲存失敗"); }
+  };
+
   const handleSelect = id => setSelectedIds(p=>p.includes(id)?p.filter(x=>x!==id):[...p,id]);
   const allTags = [...new Set(contacts.flatMap(c=>c.tags||[]))].sort();
   const filtered = contacts.filter(c => {
@@ -886,8 +1054,11 @@ export default function App() {
             <button onClick={()=>setViewMode(v=>v==="grid"?"list":"grid")} className="p-2 rounded-xl hover:bg-gray-100 text-gray-500 hidden md:flex">
               {viewMode==="grid"?<List size={18}/>:<Grid3x3 size={18}/>}
             </button>
-            <button onClick={()=>setShowCSV(true)} className="p-2 rounded-xl border border-gray-200 text-gray-500 hover:bg-gray-50 hidden sm:flex">
+            <button onClick={()=>setShowCSV(true)} className="p-2 rounded-xl border border-gray-200 text-gray-500 hover:bg-gray-50 hidden sm:flex" title="CSV 匯入">
               <FileText size={16}/>
+            </button>
+            <button onClick={()=>exportExcel(contacts)} className="p-2 rounded-xl border border-gray-200 text-gray-500 hover:bg-gray-50 hidden sm:flex" title="匯出 Excel">
+              <Download size={16}/>
             </button>
             <button onClick={()=>setShowManual(true)} className="p-2 rounded-xl border border-violet-200 text-violet-500 hover:bg-violet-50 hidden sm:flex">
               <PenLine size={16}/>
@@ -976,11 +1147,12 @@ export default function App() {
 
       {/* Batch bar */}
       {selectedIds.length>0&&(
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-gray-900 text-white rounded-2xl px-5 py-3 flex items-center gap-4 shadow-2xl z-40">
-          <span className="text-sm font-medium">已選 {selectedIds.length} 筆</span>
-          <button onClick={batchExportVCard} className="flex items-center gap-1.5 text-sm bg-white/10 hover:bg-white/20 px-3 py-1.5 rounded-xl transition-colors"><Download size={14}/>匯出 vCard</button>
-          <button onClick={batchDelete} className="flex items-center gap-1.5 text-sm bg-red-500/80 hover:bg-red-500 px-3 py-1.5 rounded-xl transition-colors"><Trash2 size={14}/>刪除</button>
-          <button onClick={()=>setSelectedIds([])} className="p-1.5 hover:bg-white/10 rounded-xl"><X size={16}/></button>
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-gray-900 text-white rounded-2xl px-4 py-3 flex items-center gap-2 shadow-2xl z-40 flex-wrap justify-center">
+          <span className="text-sm font-medium mr-1">已選 {selectedIds.length} 筆</span>
+          <button onClick={batchExportVCard} className="flex items-center gap-1.5 text-xs bg-white/10 hover:bg-white/20 px-3 py-1.5 rounded-xl transition-colors"><Download size={13}/>vCard</button>
+          <button onClick={()=>exportExcel()} className="flex items-center gap-1.5 text-xs bg-white/10 hover:bg-white/20 px-3 py-1.5 rounded-xl transition-colors"><FileText size={13}/>Excel</button>
+          <button onClick={batchDelete} className="flex items-center gap-1.5 text-xs bg-red-500/80 hover:bg-red-500 px-3 py-1.5 rounded-xl transition-colors"><Trash2 size={13}/>刪除</button>
+          <button onClick={()=>setSelectedIds([])} className="p-1.5 hover:bg-white/10 rounded-xl"><X size={15}/></button>
         </div>
       )}
 
@@ -997,9 +1169,9 @@ export default function App() {
       {/* Toast */}
       {toast&&<div className="fixed top-20 right-4 bg-gray-900 text-white text-sm px-4 py-3 rounded-xl shadow-lg z-50">{toast}</div>}
 
-      {showScan   && <ScanModal   onClose={()=>setShowScan(false)}   onSave={handleScanSave}   allContactTags={allTags}/>}
+      {showScan   && <ScanModal   onClose={()=>setShowScan(false)}   onSave={handleScanSave}   onSaveMultiple={handleSaveMultiple} allContactTags={allTags}/>}
       {showManual && <ManualModal onClose={()=>setShowManual(false)} onSave={handleManualSave} allContactTags={allTags}/>}
-      {showCSV    && <CSVImportModal onClose={()=>setShowCSV(false)} onImport={handleCSVImport}/>}
+      {showCSV    && <CSVImportModal onClose={()=>setShowCSV(false)} onImport={handleCSVImport} onDownloadTemplate={downloadCSVTemplate}/>}
       {editingContact && <EditModal contact={editingContact} onClose={()=>setEditingContact(null)} onSave={handleEditSave} allContactTags={allTags}/>}
     </div>
   );
