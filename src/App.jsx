@@ -494,7 +494,7 @@ async function geminiExtract(dataUrl, mode) {
 
 // ─── ScanModal (single + batch) ───────────────────────────────────────────────
 function ScanModal({ onClose, onSave, onSaveMultiple, allContactTags = [] }) {
-  const [mode, setMode]             = useState("choose"); // choose | single | batch-review
+  const [mode, setMode]             = useState("choose");
   const [preview, setPreview]       = useState(null);
   const [loading, setLoading]       = useState(false);
   const [formData, setFormData]     = useState(null);
@@ -502,25 +502,33 @@ function ScanModal({ onClose, onSave, onSaveMultiple, allContactTags = [] }) {
   const [batchItems, setBatchItems] = useState([]);
   const [batchLoading, setBatchLoading] = useState(false);
   const [reviewIdx, setReviewIdx]   = useState(0);
-  const fileRef   = useRef();
-  const cameraRef = useRef();
-  const batchRef  = useRef();
-  const multiRef  = useRef(); // one photo, multiple cards
 
+  const fileRef    = useRef();
+  const cameraRef  = useRef();
+  const batchRef   = useRef();
+  const multiRef   = useRef();
+  // KEY FIX: store previews in a ref so async functions always read latest value
+  const previewsRef = useRef([]);
+
+  // ── Single ──────────────────────────────────────────────────────────────────
   const handleSingleFile = (f) => {
     setMode("single");
     const reader = new FileReader();
-    reader.onload = e => { setPreview(e.target.result); extractSingle(e.target.result); };
+    reader.onload = e => {
+      setPreview(e.target.result);
+      extractSingle(e.target.result);
+    };
     reader.readAsDataURL(f);
   };
 
   const extractSingle = async (dataUrl) => {
     setLoading(true); setError(null); setFormData(null);
     try {
-      const parsed = await geminiExtract(dataUrl);
+      const parsed = await geminiExtract(dataUrl, "single");
       setFormData({ ...emptyContact(), ...parsed, tags: [] });
     } catch(e) {
-      setError("辨識失敗，請重試或手動填寫");
+      console.error("extractSingle error:", e);
+      setError("辨識失敗，請重試");
       setFormData({ ...emptyContact() });
     }
     setLoading(false);
@@ -531,33 +539,67 @@ function ScanModal({ onClose, onSave, onSaveMultiple, allContactTags = [] }) {
     onClose();
   };
 
+  // ── Multi-card (one photo, many cards) ──────────────────────────────────────
+  const handleMultiCardFile = (f) => {
+    setMode("single");
+    setLoading(true); setError(null); setFormData(null);
+    const reader = new FileReader();
+    reader.onload = async e => {
+      const dataUrl = e.target.result;
+      setPreview(dataUrl);
+      try {
+        const cards = await geminiExtract(dataUrl, "multi");
+        if (!cards || cards.length === 0) {
+          setError("未偵測到名片，請重試");
+          setFormData({ ...emptyContact() });
+        } else if (cards.length === 1) {
+          setFormData({ ...emptyContact(), ...cards[0], tags: [] });
+        } else {
+          // Multiple cards → batch review
+          const items = cards.map(card => ({
+            preview: dataUrl,
+            status: "done",
+            result: { ...emptyContact(), ...card, tags: [] },
+            error: null,
+          }));
+          previewsRef.current = items.map(() => dataUrl);
+          setBatchItems(items);
+          setMode("batch-review");
+          setReviewIdx(0);
+        }
+      } catch(e) {
+        console.error("multiCard error:", e);
+        setError("辨識失敗，請重試");
+        setFormData({ ...emptyContact() });
+      }
+      setLoading(false);
+    };
+    reader.readAsDataURL(f);
+  };
+
+  // ── Batch (multiple photos) ──────────────────────────────────────────────────
   const handleBatchFiles = (files) => {
     const arr = Array.from(files);
     if (arr.length === 0) return;
     if (arr.length === 1) { handleSingleFile(arr[0]); return; }
 
-    // Pre-load ALL previews first, then set state once everything is ready
-    const items = arr.map(f => ({ file: f, preview: null, status: "pending", result: null, error: null }));
+    // Reset ref
+    previewsRef.current = new Array(arr.length).fill(null);
+
+    const items = arr.map(() => ({ preview: null, status: "pending", result: null, error: null }));
+    setBatchItems(items);
     setMode("batch-review");
+    setReviewIdx(0);
 
-    // Load all files in parallel, then set state with all previews ready
-    const loaders = arr.map((f, i) => new Promise(resolve => {
-      const reader = new FileReader();
-      reader.onload = e => { items[i].preview = e.target.result; resolve(); };
-      reader.readAsDataURL(f);
-    }));
-
-    // Set items immediately for UI (show loading thumbnails)
-    setBatchItems([...items]);
-
-    // Update as each preview loads
+    // Load previews - store BOTH in state (for UI) AND in ref (for async access)
     arr.forEach((f, i) => {
       const reader = new FileReader();
       reader.onload = e => {
-        items[i].preview = e.target.result;
-        setBatchItems(prev => {
+        const dataUrl = e.target.result;
+        previewsRef.current[i] = dataUrl;           // ref update - always fresh
+        setBatchItems(prev => {                      // state update - for UI
           const n = [...prev];
-          n[i] = { ...n[i], preview: e.target.result };
+          n[i] = { ...n[i], preview: dataUrl };
           return n;
         });
       };
@@ -567,32 +609,24 @@ function ScanModal({ onClose, onSave, onSaveMultiple, allContactTags = [] }) {
 
   const startBatchExtract = async () => {
     setBatchLoading(true);
-    const count = batchItems.length;
+    const count = previewsRef.current.length;
 
     for (let i = 0; i < count; i++) {
-      // Get latest preview via functional state read
-      let dataUrl = null;
-      await new Promise(resolve => {
-        setBatchItems(prev => {
-          dataUrl = prev[i]?.preview || null;
-          const n = [...prev];
-          n[i] = { ...n[i], status: "loading" };
-          resolve();
-          return n;
-        });
-      });
+      setBatchItems(prev => { const n=[...prev]; n[i]={...n[i],status:"loading"}; return n; });
 
-      // Wait for preview if still loading (up to 5s)
-      for (let wait = 0; wait < 50 && !dataUrl; wait++) {
+      // Read preview from REF (always fresh, no stale closure)
+      let dataUrl = previewsRef.current[i];
+
+      // Wait up to 5s if preview not yet loaded
+      for (let w = 0; w < 50 && !dataUrl; w++) {
         await new Promise(r => setTimeout(r, 100));
-        await new Promise(resolve => {
-          setBatchItems(prev => { dataUrl = prev[i]?.preview || null; resolve(); return prev; });
-        });
+        dataUrl = previewsRef.current[i];
       }
 
       try {
         if (!dataUrl) throw new Error("圖片載入失敗");
         const parsed = await geminiExtract(dataUrl, "single");
+        console.log("Batch result", i, ":", parsed);
         setBatchItems(prev => {
           const n = [...prev];
           n[i] = { ...n[i], status: "done", result: { ...emptyContact(), ...parsed, tags: [] } };
@@ -612,101 +646,94 @@ function ScanModal({ onClose, onSave, onSaveMultiple, allContactTags = [] }) {
     setReviewIdx(0);
   };
 
-  const updateBatchResult = (idx, data) => setBatchItems(prev => { const n=[...prev]; n[idx]={...n[idx],result:data}; return n; });
-
-  // Handle one photo containing multiple cards
-  const handleMultiCardFile = (f) => {
-    setMode("single");
-    setLoading(true);
-    const reader = new FileReader();
-    reader.onload = async e => {
-      setPreview(e.target.result);
-      setError(null);
-      setFormData(null);
-      try {
-        const cards = await geminiExtract(e.target.result, "multi");
-        if (!cards || cards.length === 0) {
-          setError("未偵測到名片，請重試");
-          setFormData({ ...emptyContact() });
-        } else if (cards.length === 1) {
-          setFormData({ ...emptyContact(), ...cards[0], tags: [] });
-        } else {
-          // Multiple cards found - switch to batch review mode
-          const items = cards.map((card, i) => ({
-            file: null, preview: e.target.result,
-            status: "done",
-            result: { ...emptyContact(), ...card, tags: [] },
-            error: null,
-            label: "第" + (i+1) + "張（同一照片）"
-          }));
-          setBatchItems(items);
-          setMode("batch-review");
-          setReviewIdx(0);
-        }
-      } catch(err) {
-        setError("辨識失敗，請重試");
-        setFormData({ ...emptyContact() });
-      }
-      setLoading(false);
-    };
-    reader.readAsDataURL(f);
-  };
+  const updateBatchResult = (idx, data) =>
+    setBatchItems(prev => { const n=[...prev]; n[idx]={...n[idx],result:data}; return n; });
 
   const saveAllBatch = () => {
-    const contacts = batchItems.filter(it=>it.result).map(it => ({
-      ...it.result, id: Date.now().toString()+Math.random().toString(36).slice(2),
-      createdAt: new Date().toISOString(), source: "scan"
-    }));
+    const contacts = batchItems
+      .filter(it => it.result && (it.result.nameZh || it.result.nameEn || it.result.company))
+      .map(it => ({
+        ...it.result,
+        id: Date.now().toString() + Math.random().toString(36).slice(2),
+        createdAt: new Date().toISOString(),
+        source: "scan",
+      }));
     onSaveMultiple(contacts);
     onClose();
   };
 
   const allDone = batchItems.length > 0 && batchItems.every(it => it.status === "done" || it.status === "error");
+
   const BackArrow = () => (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/></svg>
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/>
+    </svg>
   );
 
   return (
     <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-end md:items-center justify-center p-0 md:p-4">
       <div className="bg-white w-full md:max-w-2xl md:rounded-2xl rounded-t-3xl max-h-[95vh] flex flex-col overflow-hidden shadow-2xl">
+
         {/* Header */}
         <div className="flex items-center gap-3 px-5 py-4 border-b border-gray-100 flex-shrink-0">
-          <button onClick={mode==="choose" ? onClose : ()=>{setMode("choose");setPreview(null);setFormData(null);setBatchItems([]);}}
-            className="p-2 rounded-xl hover:bg-gray-100 text-gray-500 flex-shrink-0"><BackArrow/></button>
+          <button
+            onClick={mode === "choose" ? onClose : () => {
+              setMode("choose"); setPreview(null); setFormData(null);
+              setBatchItems([]); previewsRef.current = [];
+            }}
+            className="p-2 rounded-xl hover:bg-gray-100 text-gray-500 flex-shrink-0">
+            <BackArrow/>
+          </button>
           <div className="flex items-center gap-2 flex-1">
             <ScanLine className="text-blue-500" size={20}/>
             <span className="font-bold text-gray-900">
-              {mode==="choose"&&"掃描名片"}
-              {mode==="single"&&"單張掃描"}
-              {mode==="batch-review"&&`批次掃描（${batchItems.length} 張）`}
+              {mode === "choose" && "掃描名片"}
+              {mode === "single" && "單張掃描"}
+              {mode === "batch-review" && "批次掃描（" + batchItems.length + " 張）"}
             </span>
           </div>
-          {mode==="batch-review"&&allDone&&<span className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded-full">辨識完成</span>}
+          {mode === "batch-review" && allDone && (
+            <span className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded-full">辨識完成</span>
+          )}
         </div>
 
+        {/* Body */}
         <div className="flex-1 overflow-y-auto p-5">
-          {/* Choose */}
-          {mode==="choose"&&(
+
+          {/* ── Choose ── */}
+          {mode === "choose" && (
             <div className="space-y-3">
-              <button onClick={()=>cameraRef.current.click()}
+              <button onClick={() => cameraRef.current.click()}
                 className="w-full py-10 bg-gray-900 text-white rounded-2xl flex flex-col items-center gap-3 hover:bg-gray-800 transition-all active:scale-95">
                 <Camera size={48}/>
-                <div className="text-center"><p className="font-bold text-xl">拍照掃描</p><p className="text-sm text-white/50 mt-1">點此開啟相機拍攝名片</p></div>
+                <div className="text-center">
+                  <p className="font-bold text-xl">拍照掃描</p>
+                  <p className="text-sm text-white/50 mt-1">點此開啟相機拍攝名片</p>
+                </div>
               </button>
-              <button onClick={()=>fileRef.current.click()}
-                className="w-full py-5 border-2 border-gray-200 text-gray-600 rounded-2xl flex items-center justify-center gap-3 hover:border-gray-300 hover:bg-gray-50 transition-colors">
+              <button onClick={() => fileRef.current.click()}
+                className="w-full py-4 border-2 border-gray-200 rounded-2xl flex items-center justify-center gap-3 hover:border-gray-300 hover:bg-gray-50 transition-colors text-gray-600">
                 <FileText size={20} className="text-gray-400"/>
-                <div className="text-left"><p className="font-medium text-gray-700">從相簿選取（單張）</p><p className="text-xs text-gray-400">選擇已拍好的名片照片</p></div>
+                <div className="text-left">
+                  <p className="font-medium">從相簿選取（單張）</p>
+                  <p className="text-xs text-gray-400">選擇已拍好的名片照片</p>
+                </div>
               </button>
-              <button onClick={()=>batchRef.current.click()}
-                className="w-full py-4 border-2 border-blue-100 text-blue-600 rounded-2xl flex items-center justify-center gap-3 hover:border-blue-300 hover:bg-blue-50 transition-colors">
+              <button onClick={() => batchRef.current.click()}
+                className="w-full py-4 border-2 border-blue-100 rounded-2xl flex items-center justify-center gap-3 hover:border-blue-300 hover:bg-blue-50 transition-colors text-blue-600">
                 <Grid3x3 size={20} className="text-blue-400"/>
-                <div className="text-left"><p className="font-medium">批次掃描（多張照片）</p><p className="text-xs text-blue-400">一次選多張照片，AI 依序辨識每張</p></div>
+                <div className="text-left">
+                  <p className="font-medium">批次掃描（多張照片）</p>
+                  <p className="text-xs text-blue-400">一次選多張照片，AI 依序辨識每張</p>
+                </div>
               </button>
-              <button onClick={()=>multiRef.current.click()}
-                className="w-full py-4 border-2 border-violet-100 text-violet-600 rounded-2xl flex items-center justify-center gap-3 hover:border-violet-300 hover:bg-violet-50 transition-colors">
+              <button onClick={() => multiRef.current.click()}
+                className="w-full py-4 border-2 border-violet-100 rounded-2xl flex items-center justify-center gap-3 hover:border-violet-300 hover:bg-violet-50 transition-colors text-violet-600">
                 <ScanLine size={20} className="text-violet-400"/>
-                <div className="text-left"><p className="font-medium">一張照片含多張名片</p><p className="text-xs text-violet-400">拍一張含多張名片的照片，AI 一次辨識全部</p></div>
+                <div className="text-left">
+                  <p className="font-medium">一張照片含多張名片</p>
+                  <p className="text-xs text-violet-400">拍一張含多張名片的照片，AI 一次辨識全部</p>
+                </div>
               </button>
               <input ref={cameraRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={e=>e.target.files[0]&&handleSingleFile(e.target.files[0])}/>
               <input ref={fileRef}   type="file" accept="image/*"                        className="hidden" onChange={e=>e.target.files[0]&&handleSingleFile(e.target.files[0])}/>
@@ -715,81 +742,107 @@ function ScanModal({ onClose, onSave, onSaveMultiple, allContactTags = [] }) {
             </div>
           )}
 
-          {/* Single */}
-          {mode==="single"&&(
+          {/* ── Single ── */}
+          {mode === "single" && (
             <div className="space-y-4">
-              {preview&&(
+              {preview && (
                 <div className="relative">
                   <img src={preview} alt="" className="w-full rounded-xl object-contain max-h-52 bg-gray-50"/>
-                  <button onClick={()=>{setPreview(null);setFormData(null);setError(null);setMode("choose");}} className="absolute top-2 right-2 bg-black/60 text-white rounded-full p-1"><X size={14}/></button>
+                  <button onClick={() => { setPreview(null); setFormData(null); setError(null); setMode("choose"); }}
+                    className="absolute top-2 right-2 bg-black/60 text-white rounded-full p-1"><X size={14}/></button>
                 </div>
               )}
-              {loading&&<div className="w-full py-3 bg-blue-500 text-white rounded-xl font-semibold flex items-center justify-center gap-2"><Loader2 size={18} className="animate-spin"/>AI 辨識中...</div>}
-              {!formData&&!loading&&error&&(
-                <button onClick={()=>extractSingle(preview)} className="w-full py-3 bg-blue-500 text-white rounded-xl font-semibold flex items-center justify-center gap-2 hover:bg-blue-600"><ScanLine size={18}/>重新辨識</button>
+              {loading && (
+                <div className="w-full py-3 bg-blue-500 text-white rounded-xl font-semibold flex items-center justify-center gap-2">
+                  <Loader2 size={18} className="animate-spin"/>AI 辨識中...
+                </div>
               )}
-              {error&&<div className="bg-red-50 text-red-600 text-sm rounded-xl px-4 py-3">{error}</div>}
-              {formData&&(
+              {!loading && !formData && error && (
+                <button onClick={() => extractSingle(preview)}
+                  className="w-full py-3 bg-blue-500 text-white rounded-xl font-semibold flex items-center justify-center gap-2 hover:bg-blue-600">
+                  <ScanLine size={18}/>重新辨識
+                </button>
+              )}
+              {error && <div className="bg-red-50 text-red-600 text-sm rounded-xl px-4 py-3">{error}</div>}
+              {formData && (
                 <div>
-                  <div className="flex items-center gap-2 text-sm font-semibold text-gray-700 mb-3"><Check size={16} className="text-green-500"/>辨識完成，請確認後儲存</div>
+                  <div className="flex items-center gap-2 text-sm font-semibold text-gray-700 mb-3">
+                    <Check size={16} className="text-green-500"/>辨識完成，請確認後儲存
+                  </div>
                   <ContactForm data={formData} onChange={setFormData} showTags={true} allContactTags={allContactTags}/>
                 </div>
               )}
             </div>
           )}
 
-          {/* Batch review */}
-          {mode==="batch-review"&&(
+          {/* ── Batch review ── */}
+          {mode === "batch-review" && (
             <div className="space-y-4">
               {/* Thumbnail grid */}
               <div className="grid grid-cols-4 gap-2">
-                {batchItems.map((it,i)=>(
-                  <button key={i} onClick={()=>setReviewIdx(i)}
-                    className={`relative aspect-square rounded-xl overflow-hidden border-2 transition-all ${reviewIdx===i?"border-blue-500 shadow-md":"border-transparent"}`}>
+                {batchItems.map((it, i) => (
+                  <button key={i} onClick={() => setReviewIdx(i)}
+                    className={"relative aspect-square rounded-xl overflow-hidden border-2 transition-all " + (reviewIdx === i ? "border-blue-500 shadow-md" : "border-transparent")}>
                     {it.preview
                       ? <img src={it.preview} alt="" className="w-full h-full object-cover"/>
                       : <div className="w-full h-full bg-gray-100 flex items-center justify-center"><Loader2 size={14} className="text-gray-400 animate-spin"/></div>}
-                    <div className={`absolute top-1 right-1 w-5 h-5 rounded-full flex items-center justify-center text-xs font-bold
-                      ${it.status==="done"?"bg-green-500 text-white":it.status==="error"?"bg-red-500 text-white":it.status==="loading"?"bg-blue-500 text-white":"bg-gray-300 text-gray-600"}`}>
-                      {it.status==="done"?"✓":it.status==="error"?"!":it.status==="loading"?"…":i+1}
+                    <div className={"absolute top-1 right-1 w-5 h-5 rounded-full flex items-center justify-center text-xs font-bold "
+                      + (it.status==="done" ? "bg-green-500 text-white"
+                        : it.status==="error" ? "bg-red-500 text-white"
+                        : it.status==="loading" ? "bg-blue-500 text-white"
+                        : "bg-gray-300 text-gray-600")}>
+                      {it.status==="done" ? "✓" : it.status==="error" ? "!" : it.status==="loading" ? "…" : i+1}
                     </div>
                   </button>
                 ))}
               </div>
 
-              {batchItems.every(it=>it.status==="pending")&&!batchLoading&&(
-                <button onClick={startBatchExtract} className="w-full py-3 bg-blue-500 text-white rounded-xl font-semibold flex items-center justify-center gap-2 hover:bg-blue-600">
+              {/* Start button */}
+              {batchItems.every(it => it.status === "pending") && !batchLoading && (
+                <button onClick={startBatchExtract}
+                  className="w-full py-3 bg-blue-500 text-white rounded-xl font-semibold flex items-center justify-center gap-2 hover:bg-blue-600">
                   <ScanLine size={18}/>開始批次辨識（{batchItems.length} 張）
                 </button>
               )}
-              {batchLoading&&(
+              {batchLoading && (
                 <div className="bg-blue-50 rounded-xl px-4 py-3 text-sm text-blue-700 flex items-center gap-2">
-                  <Loader2 size={16} className="animate-spin"/>辨識中... {batchItems.filter(it=>it.status==="done"||it.status==="error").length} / {batchItems.length}
+                  <Loader2 size={16} className="animate-spin"/>
+                  辨識中... {batchItems.filter(it => it.status==="done" || it.status==="error").length} / {batchItems.length}
                 </div>
               )}
 
-              {/* Review card */}
-              {batchItems[reviewIdx]?.result&&(
+              {/* Review current card */}
+              {batchItems[reviewIdx]?.result && (
                 <div className="border border-gray-100 rounded-2xl p-4">
                   <div className="flex items-center justify-between mb-3">
-                    <div className="flex items-center gap-2 text-sm font-semibold text-gray-700"><Check size={16} className="text-green-500"/>第 {reviewIdx+1} 張</div>
+                    <div className="flex items-center gap-2 text-sm font-semibold text-gray-700">
+                      <Check size={16} className="text-green-500"/>第 {reviewIdx+1} 張
+                    </div>
                     <div className="flex items-center gap-1">
-                      <button onClick={()=>setReviewIdx(i=>Math.max(0,i-1))} disabled={reviewIdx===0} className="p-1.5 rounded-lg hover:bg-gray-100 disabled:opacity-30 text-gray-500">
+                      <button onClick={() => setReviewIdx(i => Math.max(0, i-1))} disabled={reviewIdx === 0}
+                        className="p-1.5 rounded-lg hover:bg-gray-100 disabled:opacity-30 text-gray-500">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M15 18l-6-6 6-6"/></svg>
                       </button>
                       <span className="text-xs text-gray-400 px-1">{reviewIdx+1}/{batchItems.length}</span>
-                      <button onClick={()=>setReviewIdx(i=>Math.min(batchItems.length-1,i+1))} disabled={reviewIdx===batchItems.length-1} className="p-1.5 rounded-lg hover:bg-gray-100 disabled:opacity-30 text-gray-500">
+                      <button onClick={() => setReviewIdx(i => Math.min(batchItems.length-1, i+1))} disabled={reviewIdx === batchItems.length-1}
+                        className="p-1.5 rounded-lg hover:bg-gray-100 disabled:opacity-30 text-gray-500">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M9 18l6-6-6-6"/></svg>
                       </button>
                     </div>
                   </div>
-                  <ContactForm data={batchItems[reviewIdx].result} onChange={d=>updateBatchResult(reviewIdx,d)} showTags={true} allContactTags={allContactTags}/>
+                  <ContactForm data={batchItems[reviewIdx].result} onChange={d => updateBatchResult(reviewIdx, d)} showTags={true} allContactTags={allContactTags}/>
                 </div>
               )}
-              {batchItems[reviewIdx]?.status==="loading"&&(
+              {batchItems[reviewIdx]?.status === "loading" && (
                 <div className="border border-gray-100 rounded-2xl p-8 flex flex-col items-center gap-2 text-gray-400">
                   <Loader2 size={32} className="animate-spin text-blue-400"/>
                   <p className="text-sm">第 {reviewIdx+1} 張辨識中...</p>
+                </div>
+              )}
+              {batchItems[reviewIdx]?.status === "error" && (
+                <div className="border border-red-100 rounded-2xl p-4 text-center">
+                  <p className="text-sm text-red-500 mb-2">第 {reviewIdx+1} 張辨識失敗</p>
+                  <ContactForm data={batchItems[reviewIdx].result} onChange={d => updateBatchResult(reviewIdx, d)} showTags={true} allContactTags={allContactTags}/>
                 </div>
               )}
             </div>
@@ -797,16 +850,20 @@ function ScanModal({ onClose, onSave, onSaveMultiple, allContactTags = [] }) {
         </div>
 
         {/* Footer */}
-        {mode==="single"&&formData&&(
+        {mode === "single" && formData && (
           <div className="px-5 pb-5 pt-3 border-t border-gray-100 flex-shrink-0">
-            <button onClick={handleSingleSave} className="w-full py-3 bg-gray-900 text-white rounded-xl font-semibold hover:bg-gray-800">儲存並同步</button>
+            <button onClick={handleSingleSave} className="w-full py-3 bg-gray-900 text-white rounded-xl font-semibold hover:bg-gray-800">
+              儲存並同步
+            </button>
           </div>
         )}
-        {mode==="batch-review"&&allDone&&(
+        {mode === "batch-review" && allDone && (
           <div className="px-5 pb-5 pt-3 border-t border-gray-100 flex-shrink-0 space-y-2">
-            <p className="text-xs text-gray-400 text-center">成功 {batchItems.filter(it=>it.status==="done").length} 張 · 失敗 {batchItems.filter(it=>it.status==="error").length} 張</p>
+            <p className="text-xs text-gray-400 text-center">
+              成功 {batchItems.filter(it=>it.status==="done").length} 張・失敗 {batchItems.filter(it=>it.status==="error").length} 張
+            </p>
             <button onClick={saveAllBatch} className="w-full py-3 bg-gray-900 text-white rounded-xl font-semibold hover:bg-gray-800">
-              全部儲存並同步（{batchItems.filter(it=>it.result).length} 筆）
+              全部儲存並同步（{batchItems.filter(it=>it.result && (it.result.nameZh||it.result.nameEn||it.result.company)).length} 筆）
             </button>
           </div>
         )}
