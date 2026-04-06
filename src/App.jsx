@@ -473,22 +473,25 @@ async function geminiExtract(dataUrl, mode) {
           { inline_data: { mime_type: "image/jpeg", data: base64 } },
           { text: mode === "multi" ? multiPrompt : singlePrompt }
         ]}],
-        generationConfig: { temperature: 0, maxOutputTokens: mode === "multi" ? 1500 : 300 }
+        generationConfig: { temperature: 0, maxOutputTokens: mode === "multi" ? 1500 : 600 }
       })
     }
   );
   const data = await r.json();
   if (data.error) throw new Error(data.error.message);
+
+  const finishReason = data.candidates?.[0]?.finishReason;
   const text = data.candidates?.[0]?.content?.parts?.[0]?.text || (mode === "multi" ? "[]" : "{}");
+  console.log("[Gemini] finishReason:", finishReason, "| text:", text.slice(0, 300));
 
   if (mode === "multi") {
-    // Parse array
     const arrMatch = text.match(/\[[\s\S]*\]/);
-    const arr = JSON.parse(arrMatch ? arrMatch[0] : "[]");
-    return Array.isArray(arr) ? arr : [arr];
+    try { const arr = JSON.parse(arrMatch ? arrMatch[0] : "[]"); return Array.isArray(arr) ? arr : [arr]; }
+    catch(e) { console.error("[Gemini] multi parse error:", e.message); return [{}]; }
   } else {
     const match = text.match(/\{[\s\S]*\}/);
-    return JSON.parse(match ? match[0] : "{}");
+    try { const r2 = JSON.parse(match ? match[0] : "{}"); console.log("[Gemini] parsed:", r2); return r2; }
+    catch(e) { console.error("[Gemini] parse error:", e.message, text.slice(0,100)); return {}; }
   }
 }
 
