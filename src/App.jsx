@@ -467,8 +467,9 @@ const multiPrompt = “This photo may contain multiple business cards. Extract A
 + ’socials format: [{“platform”:“LINE”,“account”:“xxx”}], only if found. ’
 + “Address: prefer Chinese. Phone: phoneOffice=T/office, phoneMobile=M/cell. Ignore fax.”;
 
+// gemini-2.0-flash: no thinking tokens, reliable JSON output
 const r = await fetch(
-`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
+`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
 {
 method: “POST”,
 headers: { “Content-Type”: “application/json” },
@@ -477,7 +478,7 @@ contents: [{ parts: [
 { inline_data: { mime_type: “image/jpeg”, data: base64 } },
 { text: mode === “multi” ? multiPrompt : singlePrompt }
 ]}],
-generationConfig: { temperature: 0, maxOutputTokens: mode === “multi” ? 1500 : 600 }
+generationConfig: { temperature: 0, maxOutputTokens: mode === “multi” ? 2048 : 512 }
 })
 }
 );
